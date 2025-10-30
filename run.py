@@ -242,19 +242,6 @@ def configure_dataset_visualization(dataset):
         ]
     )
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Create a FiftyOne dataset from a video directory.")
-    parser.add_argument("--fo-dataset-name", default="re_id", help="Name of the dataset")
-    parser.add_argument("--dataset-dir", required=True, help="Path to the videos directory")
-    parser.add_argument("--show", action="store_true", help="Show live video visualization during processing")
-    parser.add_argument('--overwrite-loading', action='store_true', help='reload fo dataset')
-    parser.add_argument('--overwrite-algo', action='store_true', help='recompute embedding')
-    parser.add_argument('--save-visual-debug', action='store_true', help='Save cropped images of each person for visual debugging')
-    parser.add_argument('--visual-debug-dir', default='debug_visual', help='Directory to save debug images')
-    return parser.parse_args()
-
-
 def get_frame_view(dataset):
     return dataset.to_frames(sample_frames=True, output_dir='/tmp')
 
@@ -282,11 +269,24 @@ def compute_visualization(frame_view, sim_key, viz_key):
         metric="cosine"  # Passed to UmapVisualizationConfig to override default 'euclidean'
     )
 
-
 def launch_app(frame_view):
     patches_view = frame_view.to_patches(field='detections')
     session = fo.launch_app(patches_view)
     session.wait()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Create a FiftyOne dataset from a video directory.")
+    parser.add_argument("--fo-dataset-name", default="re_id", help="Name of the dataset")
+    parser.add_argument("--dataset-dir", required=True, help="Path to the videos directory")
+    parser.add_argument("--show", action="store_true", help="Show live video visualization during processing")
+    parser.add_argument('--overwrite-loading', action='store_true', help='reload fo dataset')
+    parser.add_argument('--overwrite-algo', action='store_true', help='recompute embedding')
+    parser.add_argument('--save-visual-debug', action='store_true', help='Save cropped images of each person for visual debugging')
+    parser.add_argument('--visual-debug-dir', default='debug_visual', help='Directory to save debug images')
+    parser.add_argument('--sim-key', default='embd_sim', help='Brain key for similarity index')
+    parser.add_argument('--viz-key', default='embd_viz', help='Brain key for visualization')
+    return parser.parse_args()
 
 
 def main():
@@ -311,8 +311,8 @@ def main():
     # Assume `dataset` is your processed FiftyOne video dataset
     frame_view = get_frame_view(dataset)
 
-    sim_key = 'embd_sim'
-    viz_key = 'embd_viz'
+    sim_key = args.sim_key
+    viz_key = args.viz_key
 
     brain_runs = dataset.list_brain_runs()
 
@@ -328,7 +328,7 @@ def main():
     if viz_key not in brain_runs or args.overwrite_algo:
         compute_visualization(frame_view, sim_key, viz_key)
 
-    launch_app(frame_view)
+    #launch_app(frame_view)
 
     # cache clip_id per sample once
     sample_ids = {fs.sample_id for fs in frame_view}
