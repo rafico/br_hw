@@ -328,8 +328,6 @@ def main():
     if viz_key not in brain_runs or args.overwrite_algo:
         compute_visualization(frame_view, sim_key, viz_key)
 
-    #launch_app(frame_view)
-
     # cache clip_id per sample once
     sample_ids = {fs.sample_id for fs in frame_view}
     clip_by_id = {sid: Path(dataset[sid].filepath).stem for sid in sample_ids}
@@ -349,6 +347,8 @@ def main():
             output_dir="persons",
             output_file="catalogue_simple.json",
     )
+
+    launch_app(frame_view)
 #    classify_scenes(dataset, all_detections)
 
 #    launch_app(frame_view)

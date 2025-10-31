@@ -1,13 +1,12 @@
 import json
-import shutil
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
 from sklearn.preprocessing import normalize
 from sklearn.metrics import pairwise_distances
-import hdbscan  # ensure installed
+import hdbscan
 
 
 # ----------------------------
@@ -24,10 +23,6 @@ def compute_tracklet_representative(embeddings: np.ndarray, use_median: bool = F
     """
     Simple representative embedding: L2-normalize each, take mean or median, re-normalize.
     Returns a 1D float64 vector.
-
-    Args:
-        embeddings: Array of embeddings for a tracklet
-        use_median: If True, use median instead of mean for aggregation
     """
     if len(embeddings) == 0:
         raise ValueError("Tracklet has no embeddings")
@@ -41,9 +36,7 @@ def compute_tracklet_representative(embeddings: np.ndarray, use_median: bool = F
 
 
 def _frame_ranges(frame_list: List[int]) -> List[List[int]]:
-    """
-    Convert sorted list of frame numbers into [start, end] ranges.
-    """
+    """Convert sorted list of frame numbers into [start, end] ranges."""
     if not frame_list:
         return []
     ranges, start, prev = [], frame_list[0], frame_list[0]
@@ -58,9 +51,7 @@ def _frame_ranges(frame_list: List[int]) -> List[List[int]]:
 
 
 def _build_video_paths_from_dataset(dataset) -> Dict[str, str]:
-    """
-    Build {clip_id: filepath} from a FiftyOne dataset (clip_id = stem of filepath).
-    """
+    """Build {clip_id: filepath} from a FiftyOne dataset."""
     video_paths = {}
     for sample in dataset:
         clip_id = Path(sample.filepath).stem
@@ -69,9 +60,7 @@ def _build_video_paths_from_dataset(dataset) -> Dict[str, str]:
 
 
 def _check_distance_matrix(D: np.ndarray):
-    """
-    Basic sanity checks to catch issues early.
-    """
+    """Basic sanity checks to catch issues early."""
     if not np.isfinite(D).all():
         raise ValueError("Distance matrix contains non-finite values.")
     if (D < 0).any():
@@ -81,68 +70,72 @@ def _check_distance_matrix(D: np.ndarray):
 
 
 # ----------------------------
-# Main pipeline
+# NEW: cannot-link from co-occurrence
 # ----------------------------
 
-def generate_person_catalogue_and_save_clips(
-        all_detections: List[Dict[str, Any]],
-        dataset: Optional[Any] = None,
-        video_paths: Optional[Dict[str, str]] = None,
-        output_dir: str = "persons",
-        output_file: str = "catalogue_simple.json",
-        min_cluster_size: int = 2,
-        min_samples: int = 1,
-        cluster_selection_epsilon: float = 0.06,
-        cluster_selection_method: str = "leaf",
-        use_median: bool = False,
-        print_distances: bool = False,
-        print_order: bool = True,
-):
+def build_cannot_links_from_detections(
+    all_detections: List[Dict[str, Any]],
+    tracklet_info: List[Dict[str, Any]]
+) -> List[Tuple[int, int]]:
     """
-    Minimal pipeline:
-      1) Group detections by (clip_id, track_id) => tracklets
-      2) Compute one representative embedding per tracklet (no outlier removal)
-      3) Build cosine distance matrix (float64, contiguous)
-      4) Cluster tracklets across clips using HDBSCAN
-      5) For each person, copy *entire* clip files they appear in into output_dir/person_XXX/
-
-    Params:
-      - all_detections: list of dicts with keys: clip_id, track_id, frame_num, embeddings
-      - dataset: optional FiftyOne dataset, used to resolve clip filepaths
-      - video_paths: optional dict {clip_id: absolute_filepath}; used if dataset is None
-      - output_dir: root directory to place person folders
-      - output_file: JSON path with a compact catalogue
-      - min_cluster_size: HDBSCAN parameter
-      - min_samples: HDBSCAN parameter
-      - cluster_selection_epsilon: HDBSCAN parameter
-      - cluster_selection_method: HDBSCAN parameter
-      - use_median: if True, use median instead of mean for computing tracklet representatives
-      - print_distances: if True, pretty-print the distance matrix
-      - print_order: if True, print tracklet order
-
-    Returns:
-      - catalogue: dict[str, list[appearance dict]]
+    Returns list of index pairs (i, j) such that tracklets i and j
+    have detections in the SAME (clip_id, frame_num) -> cannot be the same person.
+    Only pairs that survived into `tracklet_info` are returned.
     """
-    if not all_detections:
-        print("No detections found.")
-        return {}
+    # map (clip_id, track_id) -> index in tracklet_info
+    id2idx: Dict[Tuple[str, int], int] = {
+        (t["clip_id"], t["track_id"]): i for i, t in enumerate(tracklet_info)
+    }
 
-    # Resolve video paths
-    if video_paths is None:
-        if dataset is None:
-            raise ValueError("Provide either `dataset` or `video_paths` to locate clip files.")
-        video_paths = _build_video_paths_from_dataset(dataset)
+    # map (clip_id, frame_num) -> set of indices present in that frame
+    cooc: Dict[Tuple[str, int], set] = defaultdict(set)
+    for d in all_detections:
+        clip = str(d["clip_id"])
+        tid = int(d["track_id"])
+        frm = int(d["frame_num"])
+        key = (clip, tid)
+        if key not in id2idx:
+            continue  # tracklet filtered out upstream
+        cooc[(clip, frm)].add(id2idx[key])
 
-    output_root = Path(output_dir)
-    output_root.mkdir(parents=True, exist_ok=True)
+    pairs = set()
+    for _, idxs in cooc.items():
+        if len(idxs) > 1:
+            s = sorted(idxs)
+            for a in range(len(s)):
+                for b in range(a + 1, len(s)):
+                    pairs.add((s[a], s[b]))
+    return sorted(pairs)
 
-    # 1) Tracklets
+
+def apply_cannot_links_to_distance_matrix(
+    D: np.ndarray,
+    cannot_pairs: List[Tuple[int, int]],
+    max_distance: float = 2.0
+) -> None:
+    """
+    In-place: push distances for cannot-link pairs to the maximum cosine distance.
+    """
+    for i, j in cannot_pairs:
+        D[i, j] = max_distance
+        D[j, i] = max_distance
+
+
+# ----------------------------
+# Core pipeline functions
+# ----------------------------
+
+def build_tracklets(all_detections: List[Dict[str, Any]]) -> Dict[Tuple[str, int], List[Dict[str, Any]]]:
+    """Group detections by (clip_id, track_id) into tracklets."""
     tracklets = defaultdict(list)
     for d in all_detections:
         tracklets[(str(d["clip_id"]), int(d["track_id"]))] += [d]
-    print(f"Found {len(tracklets)} tracklets")
+    return tracklets
 
-    # 2) Representatives
+
+def compute_tracklet_info(tracklets: Dict[Tuple[str, int], List[Dict[str, Any]]],
+                          use_median: bool = False) -> List[Dict[str, Any]]:
+    """Compute representative embeddings and frame ranges for each tracklet."""
     tracklet_info = []
     for (clip_id, track_id), dets in tracklets.items():
         embeds = np.array([det["embeddings"] for det in dets], dtype=np.float64)
@@ -157,33 +150,44 @@ def generate_person_catalogue_and_save_clips(
                 "num_frames": len(frames),
             }
         )
+    return tracklet_info
 
-    if not tracklet_info:
-        print("No tracklet info produced.")
-        return {}
 
-    # 3) Cosine distance matrix (float64, contiguous) + normalized X
+def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
+                          print_distances: bool = False
+                          ) -> np.ndarray:
+    """Build cosine distance matrix from tracklet embeddings."""
+    print("Tracklet order:")
+    for i, t in enumerate(tracklet_info):
+        print(f"  {i}: {t['clip_id']}_{t['track_id']}")
+
     X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float64)
     X = normalize(X)
-
-    if print_order:
-        print("Tracklet order for distance matrix:")
-        for i, t in enumerate(tracklet_info):
-            print(f"{i}: {t['clip_id']}_{t['track_id']}")
 
     dist_matrix = pairwise_distances(X, metric="cosine")
     np.fill_diagonal(dist_matrix, 0.0)
     dist_matrix = np.clip(dist_matrix, 0.0, 2.0)
     dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float64)
 
-    if print_distances:
-        np.set_printoptions(precision=6, suppress=True, linewidth=140)
-        print("Pairwise cosine distances between tracklet representatives:")
-        print(dist_matrix)
+    print("Pairwise cosine distances between tracklet representatives:")
+    print(dist_matrix)
 
     _check_distance_matrix(dist_matrix)
+    return dist_matrix
 
-    # 4) Clustering with HDBSCAN
+
+def cluster_tracklets(dist_matrix: np.ndarray,
+                      tracklet_info: List[Dict[str, Any]],
+                      min_cluster_size: int = 2,
+                      min_samples: int = 1,
+                      cluster_selection_epsilon: float = 0.025,  # VERY CONSERVATIVE
+                      cluster_selection_method: str = "eom") -> np.ndarray:
+    """
+    Cluster tracklets using HDBSCAN with conservative settings.
+    """
+    print(f"Using cluster_selection_method: {cluster_selection_method}")
+    print(f"Using cluster_selection_epsilon: {cluster_selection_epsilon}")
+
     clusterer = hdbscan.HDBSCAN(
         metric="precomputed",
         min_cluster_size=min_cluster_size,
@@ -191,8 +195,12 @@ def generate_person_catalogue_and_save_clips(
         cluster_selection_method=cluster_selection_method,
         cluster_selection_epsilon=cluster_selection_epsilon,
         prediction_data=False,
+        alpha=1.0,
     )
+
     labels = clusterer.fit_predict(dist_matrix)
+
+    print(f"Raw labels: {list(labels)}")
 
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
     n_noise = int((labels == -1).sum())
@@ -203,21 +211,47 @@ def generate_person_catalogue_and_save_clips(
         f"clusters={n_clusters}, noise={n_noise}, total_persons={total_persons}"
     )
 
-    # 5) Build catalogue and copy clips
+    # Print clusters with original track_id
+    cluster_groups = defaultdict(list)
+    for i, label in enumerate(labels):
+        if label != -1:
+            cluster_groups[label].append(i)
+
+    print("\nClusters:")
+    for cluster_id in sorted(cluster_groups.keys()):
+        indices = cluster_groups[cluster_id]
+        members = [f"{tracklet_info[i]['clip_id']}_{tracklet_info[i]['track_id']}" for i in indices]
+        print(f"  Cluster {cluster_id}: {{{', '.join(members)}}}")
+
+    # Print noise points with original track_id
+    noise_indices = [i for i, label in enumerate(labels) if label == -1]
+    if noise_indices:
+        noise_members = [f"{tracklet_info[i]['clip_id']}_{tracklet_info[i]['track_id']}" for i in noise_indices]
+        print(f"  Noise: {{{', '.join(noise_members)}}}")
+
+    return labels
+
+
+def assign_person_ids(tracklet_info: List[Dict[str, Any]], labels: np.ndarray):
+    """Assign global person IDs to tracklets based on cluster labels."""
     unique = [l for l in np.unique(labels) if l != -1]
     cluster_to_global = {c: i + 1 for i, c in enumerate(unique)}
     next_gid = len(unique) + 1
 
-    # Assign a global_id to every tracklet (noise becomes its own person id)
     for i, t in enumerate(tracklet_info):
         lab = labels[i]
         if lab == -1:
             t["global_id"] = next_gid
             next_gid += 1
-        else:
+    # NOTE: put non-noise after noise handled so `next_gid` stable
+    for i, t in enumerate(tracklet_info):
+        lab = labels[i]
+        if lab != -1:
             t["global_id"] = cluster_to_global[lab]
 
-    # Per-person, which clips & tracklets
+
+def build_catalogue(tracklet_info: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Build per-person catalogue from tracklet info."""
     catalogue_dd: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for t in tracklet_info:
         catalogue_dd[str(t["global_id"])].append(
@@ -235,23 +269,84 @@ def generate_person_catalogue_and_save_clips(
             key=lambda a: (a["clip_id"], a["frame_ranges"][0][0] if a["frame_ranges"] else -1)
         )
 
-    # Copy clips once per person per clip
-    for gid, appearances in catalogue_dd.items():
-        person_dir = output_root / f"person_{int(gid):03d}"
-        person_dir.mkdir(parents=True, exist_ok=True)
-        clips = sorted({a["clip_id"] for a in appearances})
-        for clip_id in clips:
-            src_path = Path(video_paths[clip_id])
-            dst_path = person_dir / src_path.name
-            try:
-                if not dst_path.exists():
-                    shutil.copy2(src_path, dst_path)
-            except Exception as e:
-                print(f"[WARN] Failed to copy '{src_path}' to '{dst_path}': {e}")
+    return dict(catalogue_dd)
 
-    # Write compact summary
+
+# ----------------------------
+# Main pipeline
+# ----------------------------
+
+def generate_person_catalogue_and_save_clips(
+        all_detections: List[Dict[str, Any]],
+        dataset: Optional[Any] = None,
+        video_paths: Optional[Dict[str, str]] = None,
+        output_dir: str = "persons",
+        output_file: str = "catalogue_simple.json",
+        min_cluster_size: int = 2,
+        min_samples: int = 1,
+        cluster_selection_epsilon: float = 0.025,
+        cluster_selection_method: str = "eom",
+        use_median: bool = False,
+):
+    """
+      1) Group detections by (clip_id, track_id) => tracklets
+      2) Compute one representative embedding per tracklet
+      3) Build cosine distance matrix
+      4) set distances of co-occurring tracklet pairs to max (2.0)
+      5) Cluster tracklets with HDBSCAN
+      6) Assign IDs and build/save catalogue
+    """
+    if not all_detections:
+        print("No detections found.")
+        return {}
+
+    # Resolve video paths
+    if video_paths is None:
+        if dataset is None:
+            raise ValueError("Provide either `dataset` or `video_paths` to locate clip files.")
+        video_paths = _build_video_paths_from_dataset(dataset)
+
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    # Build tracklets and compute representatives
+    tracklets = build_tracklets(all_detections)
+    print(f"Found {len(tracklets)} tracklets")
+
+    tracklet_info = compute_tracklet_info(tracklets, use_median=use_median)
+    if not tracklet_info:
+        print("No tracklet info produced.")
+        return {}
+
+    # Build distance matrix
+    dist_matrix = build_distance_matrix(tracklet_info)
+
+    # --- NEW: apply cannot-links from co-occurrence ---
+    cannot_pairs = build_cannot_links_from_detections(all_detections, tracklet_info)
+    if cannot_pairs:
+        print(f"Cannot-links from co-occurrence: {len(cannot_pairs)} pairs")
+        apply_cannot_links_to_distance_matrix(dist_matrix, cannot_pairs, max_distance=2.0)
+    # ---------------------------------------------------
+
+    print(f'dist_matrix after: {dist_matrix}')
+
+    # Cluster
+    labels = cluster_tracklets(
+        dist_matrix,
+        tracklet_info,
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+        cluster_selection_method=cluster_selection_method
+    )
+
+    # Assign person IDs and build catalogue
+    assign_person_ids(tracklet_info, labels)
+    catalogue = build_catalogue(tracklet_info)
+
+    # Save catalogue (same filenames)
     summary = {
-        "total_unique_persons": len(catalogue_dd),
+        "total_unique_persons": len(catalogue),
         "total_tracklets": len(tracklet_info),
         "parameters": {
             "min_cluster_size": min_cluster_size,
@@ -261,7 +356,6 @@ def generate_person_catalogue_and_save_clips(
             "use_median": use_median,
         },
     }
-    catalogue = {k: v for k, v in catalogue_dd.items()}
     output = {"summary": summary, "catalogue": catalogue}
 
     with open(output_file, "w") as f:
