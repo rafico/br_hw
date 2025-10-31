@@ -1,28 +1,46 @@
 import json
-import numpy as np
+import shutil
 from collections import defaultdict
 from pathlib import Path
-import shutil
-from sklearn.cluster import DBSCAN
-import numpy as np
-import hdbscan
-from sklearn.preprocessing import normalize
+from typing import Dict, List, Any, Optional
 
-def _normalize_rows(arr):
+import numpy as np
+from sklearn.preprocessing import normalize
+from sklearn.metrics import pairwise_distances
+import hdbscan  # ensure installed
+
+
+# ----------------------------
+# Helpers
+# ----------------------------
+
+def _normalize_rows(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=np.float64)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     return arr / np.where(norms == 0, 1.0, norms)
 
-def compute_tracklet_representative(embeddings):
+
+def compute_tracklet_representative(embeddings: np.ndarray, use_median: bool = False) -> np.ndarray:
     """
-    Simple representative embedding: L2-normalize each, take mean, re-normalize.
+    Simple representative embedding: L2-normalize each, take mean or median, re-normalize.
+    Returns a 1D float64 vector.
+
+    Args:
+        embeddings: Array of embeddings for a tracklet
+        use_median: If True, use median instead of mean for aggregation
     """
     if len(embeddings) == 0:
         raise ValueError("Tracklet has no embeddings")
-    emb = _normalize_rows(np.asarray(embeddings)).mean(axis=0)
+    embeds = _normalize_rows(np.asarray(embeddings, dtype=np.float64))
+    if use_median:
+        emb = np.median(embeds, axis=0)
+    else:
+        emb = embeds.mean(axis=0)
     n = np.linalg.norm(emb)
     return emb if n == 0 else emb / n
 
-def _frame_ranges(frame_list):
+
+def _frame_ranges(frame_list: List[int]) -> List[List[int]]:
     """
     Convert sorted list of frame numbers into [start, end] ranges.
     """
@@ -38,7 +56,8 @@ def _frame_ranges(frame_list):
     ranges.append([start, prev])
     return ranges
 
-def _build_video_paths_from_dataset(dataset):
+
+def _build_video_paths_from_dataset(dataset) -> Dict[str, str]:
     """
     Build {clip_id: filepath} from a FiftyOne dataset (clip_id = stem of filepath).
     """
@@ -48,21 +67,45 @@ def _build_video_paths_from_dataset(dataset):
         video_paths[clip_id] = sample.filepath
     return video_paths
 
+
+def _check_distance_matrix(D: np.ndarray):
+    """
+    Basic sanity checks to catch issues early.
+    """
+    if not np.isfinite(D).all():
+        raise ValueError("Distance matrix contains non-finite values.")
+    if (D < 0).any():
+        raise ValueError("Distance matrix has negative entries.")
+    if not np.allclose(D, D.T, atol=1e-8):
+        raise ValueError("Distance matrix must be symmetric.")
+
+
+# ----------------------------
+# Main pipeline
+# ----------------------------
+
 def generate_person_catalogue_and_save_clips(
-    all_detections,
-    dataset=None,
-    video_paths=None,
-    output_dir="persons",
-    output_file="catalogue_simple.json",
-    eps=0.35,
-    min_samples=2,
+        all_detections: List[Dict[str, Any]],
+        dataset: Optional[Any] = None,
+        video_paths: Optional[Dict[str, str]] = None,
+        output_dir: str = "persons",
+        output_file: str = "catalogue_simple.json",
+        # Clustering controls
+        target_clusters: int = 7,  # heuristic used to pick HDBSCAN params
+        hdbscan_grid: Optional[Dict[str, Any]] = None,  # dict of lists
+        # Representative embedding method
+        use_median: bool = False,  # If True, use median instead of mean for tracklet representatives
+        # Logging
+        print_distances: bool = False,
+        print_order: bool = True,
 ):
     """
     Minimal pipeline:
       1) Group detections by (clip_id, track_id) => tracklets
       2) Compute one representative embedding per tracklet (no outlier removal)
-      3) Cluster tracklets across clips (DBSCAN w/ cosine)
-      4) For each person, copy *entire* clip files they appear in into output_dir/person_XXX/
+      3) Build cosine distance matrix (float64, contiguous)
+      4) Cluster tracklets across clips (HDBSCAN grid sweep), preferring exactly `target_clusters`
+      5) For each person, copy *entire* clip files they appear in into output_dir/person_XXX/
 
     Params:
       - all_detections: list of dicts with keys: clip_id, track_id, frame_num, embeddings
@@ -70,7 +113,14 @@ def generate_person_catalogue_and_save_clips(
       - video_paths: optional dict {clip_id: absolute_filepath}; used if dataset is None
       - output_dir: root directory to place person folders
       - output_file: JSON path with a compact catalogue
-      - eps, min_samples: DBSCAN params (metric='cosine')
+      - target_clusters: desired number of clusters; used by the selection logic
+      - hdbscan_grid: dict with keys "min_cluster_size", "min_samples", "cluster_selection_epsilon", "cluster_selection_method"
+      - use_median: if True, use median instead of mean for computing tracklet representatives
+      - print_distances: if True, pretty-print the distance matrix
+      - print_order: if True, print tracklet order
+
+    Returns:
+      - catalogue: dict[str, list[appearance dict]]
     """
     if not all_detections:
         print("No detections found.")
@@ -88,73 +138,122 @@ def generate_person_catalogue_and_save_clips(
     # 1) Tracklets
     tracklets = defaultdict(list)
     for d in all_detections:
-        tracklets[(d["clip_id"], d["track_id"])].append(d)
+        tracklets[(str(d["clip_id"]), int(d["track_id"]))] += [d]
     print(f"Found {len(tracklets)} tracklets")
 
     # 2) Representatives
     tracklet_info = []
     for (clip_id, track_id), dets in tracklets.items():
-        embeds = np.array([det["embeddings"] for det in dets])
-        rep = compute_tracklet_representative(embeds)
-        frames = sorted([det["frame_num"] for det in dets])
-        tracklet_info.append({
-            "clip_id": clip_id,
-            "track_id": track_id,
-            "embedding": rep,
-            "frame_ranges": _frame_ranges(frames),
-            "num_frames": len(frames),
-        })
+        embeds = np.array([det["embeddings"] for det in dets], dtype=np.float64)
+        rep = compute_tracklet_representative(embeds, use_median=use_median)
+        frames = sorted([int(det["frame_num"]) for det in dets])
+        tracklet_info.append(
+            {
+                "clip_id": clip_id,
+                "track_id": track_id,
+                "embedding": rep,
+                "frame_ranges": _frame_ranges(frames),
+                "num_frames": len(frames),
+            }
+        )
 
     if not tracklet_info:
         print("No tracklet info produced.")
         return {}
 
-    # 3) Cluster tracklets (same person across clips) — HDBSCAN
-    X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
-    X = normalize(X)  # important for cosine distance
-    print(X.shape)
+    # 3) Cosine distance matrix (float64, contiguous) + normalized X
+    X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float64)
+    X = normalize(X)  # keep unit length; HDBSCAN prefers consistent scaling
 
-    # Sweep a few gentle settings and report results (similar to your eps sweep)
-    target_clusters = 7
+    if print_order:
+        print("Tracklet order for distance matrix:")
+        for i, t in enumerate(tracklet_info):
+            print(f"{i}: {t['clip_id']}_{t['track_id']}")
+
+    # Use sklearn to build float64 distances (for printing/sanity, even if we fit on X)
+    dist_matrix = pairwise_distances(X, metric="cosine")  # returns float64
+    np.fill_diagonal(dist_matrix, 0.0)
+    dist_matrix = np.clip(dist_matrix, 0.0, 2.0)
+    dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float64)
+
+    if print_distances:
+        np.set_printoptions(precision=6, suppress=True, linewidth=140)
+        print("Pairwise cosine distances between tracklet representatives:")
+        print(dist_matrix)
+
+    _check_distance_matrix(dist_matrix)
+
+    # ----------------------------
+    # 4) Clustering with HDBSCAN
+    # ----------------------------
+    # More permissive default grid to make 7 clusters reachable
+    if hdbscan_grid is None:
+        hdbscan_grid = {
+            "min_cluster_size": [2, 3, 4],
+            "min_samples": [1, 2, 3],
+            "cluster_selection_epsilon": [0.0, 0.005, 0.01, 0.02],
+            "cluster_selection_method": "leaf",  # finer clusters than "eom"
+        }
+
+    mcs_list = hdbscan_grid["min_cluster_size"]
+    ms_list = hdbscan_grid["min_samples"]
+    eps_list = hdbscan_grid["cluster_selection_epsilon"]
+    csm = hdbscan_grid.get("cluster_selection_method", "leaf")
+
     best = None
     best_labels = None
     best_clusterer = None
 
-    for min_cluster_size in [3, 4, 5, 6]:
-        for min_samples in [2, 3, 4]:
-            for cseps in [0.0, 0.005, 0.01, 0.015, 0.02]:
-                clusterer = hdbscan.HDBSCAN(
-                    metric="cosine",
-                    min_cluster_size=min_cluster_size,
-                    min_samples=min_samples,
-                    cluster_selection_method="leaf",  # finer clusters
-                    cluster_selection_epsilon=cseps,
-                    prediction_data=True
-                )
-                labels = clusterer.fit_predict(X)
-                n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-                n_noise = int((labels == -1).sum())
-                print(f"mcs={min_cluster_size}, ms={min_samples}, eps={cseps:.3f} -> "
-                      f"clusters={n_clusters}, noise={n_noise}")
+    def score_tuple(n_clusters: int, n_noise: int):
+        # Prefer exact target first; then fewer noise points
+        return (abs(n_clusters - target_clusters), n_noise)
 
-                # pick params that aim for ~7 clusters while keeping noise modest
-                score = abs(n_clusters - target_clusters) + 0.25 * (n_noise / len(X))
-                if best is None or score < best[0]:
-                    best = (score, min_cluster_size, min_samples, cseps, n_clusters, n_noise)
-                    best_labels = labels
+    for mcs in mcs_list:
+        hit_target = False
+        for ms in ms_list:
+            for cseps in eps_list:
+                clusterer = hdbscan.HDBSCAN(
+                    metric="precomputed",
+                    min_cluster_size=mcs,
+                    min_samples=ms,
+                    cluster_selection_method=csm,
+                    cluster_selection_epsilon=cseps,
+                    prediction_data=False,  # avoid warnings when precomputed
+                )
+                trial_labels = clusterer.fit_predict(dist_matrix)
+
+                n_clusters = len(set(trial_labels)) - (1 if -1 in trial_labels else 0)
+                n_noise = int((trial_labels == -1).sum())
+                print(
+                    f"HDBSCAN mcs={mcs}, ms={ms}, eps={cseps:.3f} -> "
+                    f"clusters={n_clusters}, noise={n_noise}"
+                )
+                s = score_tuple(n_clusters, n_noise)
+
+                if best is None or s < best[0]:
+                    best = (s, mcs, ms, cseps, n_clusters, n_noise)
+                    best_labels = trial_labels
                     best_clusterer = clusterer
 
-    # Final selection
+                # Early exit once we hit target exactly at this param level
+                if n_clusters == target_clusters:
+                    hit_target = True
+                    break
+            if hit_target:
+                break
+        if hit_target:
+            break
+
     _, mcs, ms, cseps, k, noise = best
-    print(f"Selected HDBSCAN -> min_cluster_size={mcs}, min_samples={ms}, "
-          f"cluster_selection_epsilon={cseps:.3f} | clusters={k}, noise={noise}")
-
+    print(
+        f"Selected HDBSCAN -> min_cluster_size={mcs}, min_samples={ms}, "
+        f"cluster_selection_epsilon={cseps:.3f} | clusters={k}, noise={noise}"
+    )
     labels = best_labels
-    clusterer = best_clusterer
 
-    clusterer = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine")
-    labels = clusterer.fit_predict(X)
-
+    # ----------------------------
+    # 5) Build catalogue and copy clips
+    # ----------------------------
     unique = [l for l in np.unique(labels) if l != -1]
     cluster_to_global = {c: i + 1 for i, c in enumerate(unique)}
     next_gid = len(unique) + 1
@@ -168,46 +267,49 @@ def generate_person_catalogue_and_save_clips(
         else:
             t["global_id"] = cluster_to_global[lab]
 
-    # 4) Build simple catalogue: per person, which clips & tracklets
-    catalogue = defaultdict(list)
+    # Per-person, which clips & tracklets
+    catalogue_dd: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for t in tracklet_info:
-        catalogue[str(t["global_id"])].append({
-            "clip_id": t["clip_id"],
-            "local_track_id": t["track_id"],
-            "frame_ranges": t["frame_ranges"],
-            "num_frames": t["num_frames"],
-        })
+        catalogue_dd[str(t["global_id"])].append(
+            {
+                "clip_id": t["clip_id"],
+                "local_track_id": t["track_id"],
+                "frame_ranges": t["frame_ranges"],
+                "num_frames": t["num_frames"],
+            }
+        )
 
     # Sort appearances for readability
-    for gid in catalogue:
-        catalogue[gid].sort(key=lambda a: (a["clip_id"], a["frame_ranges"][0][0] if a["frame_ranges"] else -1))
+    for gid in catalogue_dd:
+        catalogue_dd[gid].sort(
+            key=lambda a: (a["clip_id"], a["frame_ranges"][0][0] if a["frame_ranges"] else -1)
+        )
 
-    # Copy each relevant clip into that person's folder
-    for gid, appearances in catalogue.items():
+    # Copy clips once per person per clip
+    for gid, appearances in catalogue_dd.items():
         person_dir = output_root / f"person_{int(gid):03d}"
         person_dir.mkdir(parents=True, exist_ok=True)
-
-        # Unique clips for this person
-        clip_ids = sorted(set(a["clip_id"] for a in appearances))
-        for cid in clip_ids:
-            src = video_paths.get(cid)
-            if not src:
-                print(f"[WARN] Missing video path for clip_id '{cid}'")
-                continue
-            src_path = Path(src)
+        clips = sorted({a["clip_id"] for a in appearances})
+        for clip_id in clips:
+            src_path = Path(video_paths[clip_id])
             dst_path = person_dir / src_path.name
-            if not dst_path.exists():
-                try:
+            try:
+                if not dst_path.exists():
                     shutil.copy2(src_path, dst_path)
-                except Exception as e:
-                    print(f"[WARN] Failed to copy '{src_path}' -> '{dst_path}': {e}")
+            except Exception as e:
+                print(f"[WARN] Failed to copy '{src_path}' to '{dst_path}': {e}")
 
     # Write compact summary
     summary = {
-        "total_unique_persons": len(catalogue),
+        "total_unique_persons": len(catalogue_dd),
         "total_tracklets": len(tracklet_info),
-        "parameters": {"dbscan_eps": eps, "dbscan_min_samples": min_samples},
+        "parameters": {
+            "target_clusters": target_clusters,
+            "hdbscan_grid": hdbscan_grid,
+            "use_median": use_median,
+        },
     }
+    catalogue = {k: v for k, v in catalogue_dd.items()}
     output = {"summary": summary, "catalogue": catalogue}
 
     with open(output_file, "w") as f:

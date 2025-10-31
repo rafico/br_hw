@@ -348,8 +348,6 @@ def main():
             video_paths=None,
             output_dir="persons",
             output_file="catalogue_simple.json",
-            eps=0.35,
-            min_samples=2,
     )
 #    classify_scenes(dataset, all_detections)
 
