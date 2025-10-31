@@ -90,12 +90,11 @@ def generate_person_catalogue_and_save_clips(
         video_paths: Optional[Dict[str, str]] = None,
         output_dir: str = "persons",
         output_file: str = "catalogue_simple.json",
-        # Clustering controls
-        target_clusters: int = 7,  # heuristic used to pick HDBSCAN params
-        hdbscan_grid: Optional[Dict[str, Any]] = None,  # dict of lists
-        # Representative embedding method
-        use_median: bool = False,  # If True, use median instead of mean for tracklet representatives
-        # Logging
+        min_cluster_size: int = 2,
+        min_samples: int = 1,
+        cluster_selection_epsilon: float = 0.06,
+        cluster_selection_method: str = "leaf",
+        use_median: bool = False,
         print_distances: bool = False,
         print_order: bool = True,
 ):
@@ -104,7 +103,7 @@ def generate_person_catalogue_and_save_clips(
       1) Group detections by (clip_id, track_id) => tracklets
       2) Compute one representative embedding per tracklet (no outlier removal)
       3) Build cosine distance matrix (float64, contiguous)
-      4) Cluster tracklets across clips (HDBSCAN grid sweep), preferring exactly `target_clusters`
+      4) Cluster tracklets across clips using HDBSCAN
       5) For each person, copy *entire* clip files they appear in into output_dir/person_XXX/
 
     Params:
@@ -113,8 +112,10 @@ def generate_person_catalogue_and_save_clips(
       - video_paths: optional dict {clip_id: absolute_filepath}; used if dataset is None
       - output_dir: root directory to place person folders
       - output_file: JSON path with a compact catalogue
-      - target_clusters: desired number of clusters; used by the selection logic
-      - hdbscan_grid: dict with keys "min_cluster_size", "min_samples", "cluster_selection_epsilon", "cluster_selection_method"
+      - min_cluster_size: HDBSCAN parameter
+      - min_samples: HDBSCAN parameter
+      - cluster_selection_epsilon: HDBSCAN parameter
+      - cluster_selection_method: HDBSCAN parameter
       - use_median: if True, use median instead of mean for computing tracklet representatives
       - print_distances: if True, pretty-print the distance matrix
       - print_order: if True, print tracklet order
@@ -163,15 +164,14 @@ def generate_person_catalogue_and_save_clips(
 
     # 3) Cosine distance matrix (float64, contiguous) + normalized X
     X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float64)
-    X = normalize(X)  # keep unit length; HDBSCAN prefers consistent scaling
+    X = normalize(X)
 
     if print_order:
         print("Tracklet order for distance matrix:")
         for i, t in enumerate(tracklet_info):
             print(f"{i}: {t['clip_id']}_{t['track_id']}")
 
-    # Use sklearn to build float64 distances (for printing/sanity, even if we fit on X)
-    dist_matrix = pairwise_distances(X, metric="cosine")  # returns float64
+    dist_matrix = pairwise_distances(X, metric="cosine")
     np.fill_diagonal(dist_matrix, 0.0)
     dist_matrix = np.clip(dist_matrix, 0.0, 2.0)
     dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float64)
@@ -183,77 +183,27 @@ def generate_person_catalogue_and_save_clips(
 
     _check_distance_matrix(dist_matrix)
 
-    # ----------------------------
     # 4) Clustering with HDBSCAN
-    # ----------------------------
-    # More permissive default grid to make 7 clusters reachable
-    if hdbscan_grid is None:
-        hdbscan_grid = {
-            "min_cluster_size": [2, 3, 4],
-            "min_samples": [1, 2, 3],
-            "cluster_selection_epsilon": [0.0, 0.005, 0.01, 0.02],
-            "cluster_selection_method": "leaf",  # finer clusters than "eom"
-        }
-
-    mcs_list = hdbscan_grid["min_cluster_size"]
-    ms_list = hdbscan_grid["min_samples"]
-    eps_list = hdbscan_grid["cluster_selection_epsilon"]
-    csm = hdbscan_grid.get("cluster_selection_method", "leaf")
-
-    best = None
-    best_labels = None
-    best_clusterer = None
-
-    def score_tuple(n_clusters: int, n_noise: int):
-        # Prefer exact target first; then fewer noise points
-        return (abs(n_clusters - target_clusters), n_noise)
-
-    for mcs in mcs_list:
-        hit_target = False
-        for ms in ms_list:
-            for cseps in eps_list:
-                clusterer = hdbscan.HDBSCAN(
-                    metric="precomputed",
-                    min_cluster_size=mcs,
-                    min_samples=ms,
-                    cluster_selection_method=csm,
-                    cluster_selection_epsilon=cseps,
-                    prediction_data=False,  # avoid warnings when precomputed
-                )
-                trial_labels = clusterer.fit_predict(dist_matrix)
-
-                n_clusters = len(set(trial_labels)) - (1 if -1 in trial_labels else 0)
-                n_noise = int((trial_labels == -1).sum())
-                print(
-                    f"HDBSCAN mcs={mcs}, ms={ms}, eps={cseps:.3f} -> "
-                    f"clusters={n_clusters}, noise={n_noise}"
-                )
-                s = score_tuple(n_clusters, n_noise)
-
-                if best is None or s < best[0]:
-                    best = (s, mcs, ms, cseps, n_clusters, n_noise)
-                    best_labels = trial_labels
-                    best_clusterer = clusterer
-
-                # Early exit once we hit target exactly at this param level
-                if n_clusters == target_clusters:
-                    hit_target = True
-                    break
-            if hit_target:
-                break
-        if hit_target:
-            break
-
-    _, mcs, ms, cseps, k, noise = best
-    print(
-        f"Selected HDBSCAN -> min_cluster_size={mcs}, min_samples={ms}, "
-        f"cluster_selection_epsilon={cseps:.3f} | clusters={k}, noise={noise}"
+    clusterer = hdbscan.HDBSCAN(
+        metric="precomputed",
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        cluster_selection_method=cluster_selection_method,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+        prediction_data=False,
     )
-    labels = best_labels
+    labels = clusterer.fit_predict(dist_matrix)
 
-    # ----------------------------
+    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    n_noise = int((labels == -1).sum())
+    total_persons = n_clusters + n_noise
+
+    print(
+        f"HDBSCAN mcs={min_cluster_size}, ms={min_samples}, eps={cluster_selection_epsilon:.3f} -> "
+        f"clusters={n_clusters}, noise={n_noise}, total_persons={total_persons}"
+    )
+
     # 5) Build catalogue and copy clips
-    # ----------------------------
     unique = [l for l in np.unique(labels) if l != -1]
     cluster_to_global = {c: i + 1 for i, c in enumerate(unique)}
     next_gid = len(unique) + 1
@@ -304,8 +254,10 @@ def generate_person_catalogue_and_save_clips(
         "total_unique_persons": len(catalogue_dd),
         "total_tracklets": len(tracklet_info),
         "parameters": {
-            "target_clusters": target_clusters,
-            "hdbscan_grid": hdbscan_grid,
+            "min_cluster_size": min_cluster_size,
+            "min_samples": min_samples,
+            "cluster_selection_epsilon": cluster_selection_epsilon,
+            "cluster_selection_method": cluster_selection_method,
             "use_median": use_median,
         },
     }
