@@ -6,7 +6,6 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 from sklearn.preprocessing import normalize
 from sklearn.metrics import pairwise_distances
-import hdbscan
 
 
 # ----------------------------
@@ -69,10 +68,6 @@ def _check_distance_matrix(D: np.ndarray):
         raise ValueError("Distance matrix must be symmetric.")
 
 
-# ----------------------------
-# NEW: cannot-link from co-occurrence
-# ----------------------------
-
 def build_cannot_links_from_detections(
     all_detections: List[Dict[str, Any]],
     tracklet_info: List[Dict[str, Any]]
@@ -106,6 +101,26 @@ def build_cannot_links_from_detections(
                 for b in range(a + 1, len(s)):
                     pairs.add((s[a], s[b]))
     return sorted(pairs)
+
+
+def build_same_clip_cannot_links(tracklet_info: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
+    """
+    For cross-clip re-ID, forbid merging any two tracklets from the SAME clip.
+    Returns list of index pairs (i, j) where tracklet_info[i]["clip_id"] == tracklet_info[j]["clip_id"].
+    """
+    by_clip: Dict[str, List[int]] = defaultdict(list)
+    for i, t in enumerate(tracklet_info):
+        by_clip[str(t["clip_id"])].append(i)
+
+    pairs: List[Tuple[int, int]] = []
+    for idxs in by_clip.values():
+        if len(idxs) < 2:
+            continue
+        idxs = sorted(idxs)
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                pairs.append((idxs[a], idxs[b]))
+    return pairs
 
 
 def apply_cannot_links_to_distance_matrix(
@@ -153,9 +168,7 @@ def compute_tracklet_info(tracklets: Dict[Tuple[str, int], List[Dict[str, Any]]]
     return tracklet_info
 
 
-def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
-                          print_distances: bool = False
-                          ) -> np.ndarray:
+def build_distance_matrix(tracklet_info: List[Dict[str, Any]]) -> np.ndarray:
     """Build cosine distance matrix from tracklet embeddings."""
     print("Tracklet order:")
     for i, t in enumerate(tracklet_info):
@@ -169,9 +182,6 @@ def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
     dist_matrix = np.clip(dist_matrix, 0.0, 2.0)
     dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float64)
 
-    print("Pairwise cosine distances between tracklet representatives:")
-    print(dist_matrix)
-
     _check_distance_matrix(dist_matrix)
     return dist_matrix
 
@@ -179,54 +189,118 @@ def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
 def cluster_tracklets(dist_matrix: np.ndarray,
                       tracklet_info: List[Dict[str, Any]],
                       min_cluster_size: int = 2,
-                      min_samples: int = 1,
-                      cluster_selection_epsilon: float = 0.025,  # VERY CONSERVATIVE
-                      cluster_selection_method: str = "eom") -> np.ndarray:
+                      cluster_selection_epsilon: float = 0.025) -> np.ndarray:
     """
-    Cluster tracklets using HDBSCAN with conservative settings.
-    """
-    print(f"Using cluster_selection_method: {cluster_selection_method}")
-    print(f"Using cluster_selection_epsilon: {cluster_selection_epsilon}")
+    Cluster tracklets using a custom greedy algorithm.
+    Max cluster size = number of unique clips present in `tracklet_info`.
 
-    clusterer = hdbscan.HDBSCAN(
-        metric="precomputed",
-        min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-        cluster_selection_method=cluster_selection_method,
-        cluster_selection_epsilon=cluster_selection_epsilon,
-        prediction_data=False,
-        alpha=1.0,
+    CROSS-CLIP constraint: a cluster may contain at most one tracklet from any given clip_id.
+    This prevents transitive merges from introducing duplicate clip_ids.
+    """
+    # Determine dynamic max size = #unique clips
+    clip_ids_list = [str(t["clip_id"]) for t in tracklet_info]
+    unique_clips = sorted(set(clip_ids_list))
+    max_cluster_size = len(unique_clips)
+
+    print(
+        f"Using custom greedy clustering with max size = #clips ({max_cluster_size}), "
+        f"epsilon={cluster_selection_epsilon} (cross-clip only)"
     )
 
-    labels = clusterer.fit_predict(dist_matrix)
+    n = dist_matrix.shape[0]
+
+    # Get all pairs from upper triangle
+    i, j = np.triu_indices(n, k=1)
+    dists = dist_matrix[i, j]
+    pairs = list(zip(dists, i, j))
+    sorted_pairs = sorted(pairs)  # sort by dist ascending
+
+    # Union-find structures
+    parent = list(range(n))
+    rank = [0] * n
+    sizes = [1] * n
+
+    # Track the set of clip_ids present in each component (by root index)
+    comp_clip_sets: List[set] = [set([clip_ids_list[idx]]) for idx in range(n)]
+
+    def find(x):
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x, y):
+        px = find(x)
+        py = find(y)
+        if px == py:
+            return False
+        # Union by rank
+        if rank[px] < rank[py]:
+            parent[px] = py
+            sizes[py] += sizes[px]
+            comp_clip_sets[py] |= comp_clip_sets[px]
+        elif rank[px] > rank[py]:
+            parent[py] = px
+            sizes[px] += sizes[py]
+            comp_clip_sets[px] |= comp_clip_sets[py]
+        else:
+            parent[py] = px
+            sizes[px] += sizes[py]
+            comp_clip_sets[px] |= comp_clip_sets[py]
+            rank[px] += 1
+        return True
+
+    # Greedily merge closest pairs if within epsilon, size <= max_cluster_size,
+    # and CROSS-CLIP constraint holds
+    for dist, a, b in sorted_pairs:
+        if dist > cluster_selection_epsilon:
+            break
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            continue
+        # Enforce: no duplicate clip_ids inside a cluster
+        if not comp_clip_sets[ra].isdisjoint(comp_clip_sets[rb]):
+            continue
+        # Enforce dynamic max cluster size (redundant with cross-clip, but explicit)
+        if sizes[ra] + sizes[rb] > max_cluster_size:
+            continue
+        union(ra, rb)
+
+    # Collect components
+    components = defaultdict(list)
+    for idx in range(n):
+        root = find(idx)
+        components[root].append(idx)
+
+    # Filter clusters by min_cluster_size
+    cluster_groups = {k: v for k, v in components.items() if len(v) >= min_cluster_size}
+
+    # Assign labels (-1 for noise/singletons)
+    labels = np.full(n, -1, dtype=np.int32)
+    for cl_id, members in enumerate(cluster_groups.values()):
+        for m in members:
+            labels[m] = cl_id
 
     print(f"Raw labels: {list(labels)}")
 
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-    n_noise = int((labels == -1).sum())
+    n_clusters = len(cluster_groups)
+    n_noise = n - sum(len(v) for v in cluster_groups.values())
     total_persons = n_clusters + n_noise
 
     print(
-        f"HDBSCAN mcs={min_cluster_size}, ms={min_samples}, eps={cluster_selection_epsilon:.3f} -> "
+        f"Custom clustering mcs={min_cluster_size}, eps={cluster_selection_epsilon:.3f} -> "
         f"clusters={n_clusters}, noise={n_noise}, total_persons={total_persons}"
     )
 
     # Print clusters with original track_id
-    cluster_groups = defaultdict(list)
-    for i, label in enumerate(labels):
-        if label != -1:
-            cluster_groups[label].append(i)
-
-    print("\nClusters:")
-    for cluster_id in sorted(cluster_groups.keys()):
-        indices = cluster_groups[cluster_id]
-        members = [f"{tracklet_info[i]['clip_id']}_{tracklet_info[i]['track_id']}" for i in indices]
+    print("\nClusters (cross-clip):")
+    for cluster_id, indices in enumerate(cluster_groups.values()):
+        members = [f"{tracklet_info[i]['clip_id']}_{tracklet_info[i]['track_id']}" for i in sorted(indices)]
         print(f"  Cluster {cluster_id}: {{{', '.join(members)}}}")
 
     # Print noise points with original track_id
-    noise_indices = [i for i, label in enumerate(labels) if label == -1]
-    if noise_indices:
-        noise_members = [f"{tracklet_info[i]['clip_id']}_{tracklet_info[i]['track_id']}" for i in noise_indices]
+    noise_indices = np.where(labels == -1)[0]
+    if len(noise_indices) > 0:
+        noise_members = [f"{tracklet_info[i]['clip_id']}_{tracklet_info[i]['track_id']}" for i in sorted(noise_indices)]
         print(f"  Noise: {{{', '.join(noise_members)}}}")
 
     return labels
@@ -283,17 +357,18 @@ def generate_person_catalogue_and_save_clips(
         output_dir: str = "persons",
         output_file: str = "catalogue_simple.json",
         min_cluster_size: int = 2,
-        min_samples: int = 1,
-        cluster_selection_epsilon: float = 0.025,
-        cluster_selection_method: str = "eom",
-        use_median: bool = False,
+        cluster_selection_epsilon: float = 0.2,
+        use_median: bool = True,
 ):
     """
       1) Group detections by (clip_id, track_id) => tracklets
       2) Compute one representative embedding per tracklet
       3) Build cosine distance matrix
-      4) set distances of co-occurring tracklet pairs to max (2.0)
-      5) Cluster tracklets with HDBSCAN
+      4) Apply cannot-links:
+         - co-occurring tracklets in same (clip_id, frame)
+         - ALL pairs from the same clip (enforces cross-clip-only clustering)
+      5) Cluster tracklets with custom greedy algorithm (max size = number of unique clips)
+         that ALSO enforces cross-clip constraint during merges
       6) Assign IDs and build/save catalogue
     """
     if not all_detections:
@@ -321,23 +396,24 @@ def generate_person_catalogue_and_save_clips(
     # Build distance matrix
     dist_matrix = build_distance_matrix(tracklet_info)
 
-    # --- NEW: apply cannot-links from co-occurrence ---
+    # Cannot-links from co-occurrence
     cannot_pairs = build_cannot_links_from_detections(all_detections, tracklet_info)
     if cannot_pairs:
         print(f"Cannot-links from co-occurrence: {len(cannot_pairs)} pairs")
         apply_cannot_links_to_distance_matrix(dist_matrix, cannot_pairs, max_distance=2.0)
-    # ---------------------------------------------------
 
-    print(f'dist_matrix after: {dist_matrix}')
+    # Cannot-links from SAME CLIP to enforce cross-clip-only clustering
+    same_clip_pairs = build_same_clip_cannot_links(tracklet_info)
+    if same_clip_pairs:
+        print(f"Cannot-links from same-clip constraint: {len(same_clip_pairs)} pairs")
+        apply_cannot_links_to_distance_matrix(dist_matrix, same_clip_pairs, max_distance=2.0)
 
-    # Cluster
+    # Cluster (with cross-clip enforcement inside the algorithm too)
     labels = cluster_tracklets(
         dist_matrix,
         tracklet_info,
         min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
         cluster_selection_epsilon=cluster_selection_epsilon,
-        cluster_selection_method=cluster_selection_method
     )
 
     # Assign person IDs and build catalogue
@@ -350,10 +426,10 @@ def generate_person_catalogue_and_save_clips(
         "total_tracklets": len(tracklet_info),
         "parameters": {
             "min_cluster_size": min_cluster_size,
-            "min_samples": min_samples,
             "cluster_selection_epsilon": cluster_selection_epsilon,
-            "cluster_selection_method": cluster_selection_method,
             "use_median": use_median,
+            "cross_clip_only": True,
+            "max_cluster_size_rule": "number_of_unique_clips",
         },
     }
     output = {"summary": summary, "catalogue": catalogue}
