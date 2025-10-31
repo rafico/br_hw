@@ -11,7 +11,7 @@ import numpy as np
 from reid_model import DetectionReIDExtractor
 from generate_person_catalogue import generate_person_catalogue
 from compute_or_load_all_detections import compute_or_load_all_detections
-from classify_scenes import classify_scenes
+from classify_scenes_v2 import classify_scenes
 
 
 def load_detector(model_path: str = "yolo11m.pt"):
@@ -345,8 +345,7 @@ def main():
             output_file="catalogue_simple.json",
     )
 
-    launch_app(frame_view)
-#    classify_scenes(dataset, all_detections)
+    classify_scenes(dataset, all_detections)
 
 #    launch_app(frame_view)
 
