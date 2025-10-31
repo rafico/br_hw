@@ -9,7 +9,7 @@ import argparse
 import numpy as np
 
 from reid_model import DetectionReIDExtractor
-from generate_person_catalogue import generate_person_catalogue_and_save_clips
+from generate_person_catalogue import generate_person_catalogue
 from compute_or_load_all_detections import compute_or_load_all_detections
 from classify_scenes import classify_scenes
 
@@ -340,11 +340,8 @@ def main():
         overwrite_algo=args.overwrite_algo,
     )
 
-    generate_person_catalogue_and_save_clips(
+    generate_person_catalogue(
             all_detections,
-            dataset=dataset,
-            video_paths=None,
-            output_dir="persons",
             output_file="catalogue_simple.json",
     )
 

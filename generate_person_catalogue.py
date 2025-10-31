@@ -49,15 +49,6 @@ def _frame_ranges(frame_list: List[int]) -> List[List[int]]:
     return ranges
 
 
-def _build_video_paths_from_dataset(dataset) -> Dict[str, str]:
-    """Build {clip_id: filepath} from a FiftyOne dataset."""
-    video_paths = {}
-    for sample in dataset:
-        clip_id = Path(sample.filepath).stem
-        video_paths[clip_id] = sample.filepath
-    return video_paths
-
-
 def _check_distance_matrix(D: np.ndarray):
     """Basic sanity checks to catch issues early."""
     if not np.isfinite(D).all():
@@ -105,7 +96,7 @@ def build_cannot_links_from_detections(
 
 def build_same_clip_cannot_links(tracklet_info: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
     """
-    NEW: For cross-clip re-ID, forbid merging any two tracklets from the SAME clip.
+    For cross-clip re-ID, forbid merging any two tracklets from the SAME clip.
     Returns list of index pairs (i, j) where tracklet_info[i]["clip_id"] == tracklet_info[j]["clip_id"].
     """
     by_clip: Dict[str, List[int]] = defaultdict(list)
@@ -351,11 +342,8 @@ def build_catalogue(tracklet_info: List[Dict[str, Any]]) -> Dict[str, List[Dict[
 # Main pipeline
 # ----------------------------
 
-def generate_person_catalogue_and_save_clips(
+def generate_person_catalogue(
         all_detections: List[Dict[str, Any]],
-        dataset: Optional[Any] = None,
-        video_paths: Optional[Dict[str, str]] = None,
-        output_dir: str = "persons",
         output_file: str = "catalogue_simple.json",
         min_cluster_size: int = 2,
         min_samples: int = 2,
@@ -372,20 +360,11 @@ def generate_person_catalogue_and_save_clips(
          - ALL pairs from the same clip (enforces cross-clip-only clustering)
       5) Cluster tracklets with custom greedy algorithm (max size 3) that ALSO
          enforces cross-clip constraint during merges
-      6) Assign IDs and build/save catalogue
+      6) Assign IDs and build catalogue (optionally save to JSON)
     """
     if not all_detections:
         print("No detections found.")
         return {}
-
-    # Resolve video paths
-    if video_paths is None:
-        if dataset is None:
-            raise ValueError("Provide either `dataset` or `video_paths` to locate clip files.")
-        video_paths = _build_video_paths_from_dataset(dataset)
-
-    output_root = Path(output_dir)
-    output_root.mkdir(parents=True, exist_ok=True)
 
     # Build tracklets and compute representatives
     tracklets = build_tracklets(all_detections)
@@ -405,7 +384,7 @@ def generate_person_catalogue_and_save_clips(
         print(f"Cannot-links from co-occurrence: {len(cannot_pairs)} pairs")
         apply_cannot_links_to_distance_matrix(dist_matrix, cannot_pairs, max_distance=2.0)
 
-    # NEW: Cannot-links from SAME CLIP to enforce cross-clip-only clustering
+    # Cannot-links from SAME CLIP to enforce cross-clip-only clustering
     same_clip_pairs = build_same_clip_cannot_links(tracklet_info)
     if same_clip_pairs:
         print(f"Cannot-links from same-clip constraint: {len(same_clip_pairs)} pairs")
@@ -427,7 +406,7 @@ def generate_person_catalogue_and_save_clips(
     assign_person_ids(tracklet_info, labels)
     catalogue = build_catalogue(tracklet_info)
 
-    # Save catalogue (same filenames)
+    # Save catalogue
     summary = {
         "total_unique_persons": len(catalogue),
         "total_tracklets": len(tracklet_info),
@@ -447,7 +426,6 @@ def generate_person_catalogue_and_save_clips(
 
     print(f"Unique persons: {summary['total_unique_persons']}")
     print(f"Tracklets clustered: {summary['total_tracklets']}")
-    print(f"Clips copied into: {output_root.resolve()}")
     print(f"Catalogue saved to: {Path(output_file).resolve()}")
 
     return catalogue
