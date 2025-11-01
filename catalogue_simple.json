@@ -1,0 +1,386 @@
+{
+  "summary": {
+    "total_unique_persons": 21,
+    "total_tracklets": 26,
+    "parameters": {
+      "min_cluster_size": 2,
+      "cluster_selection_epsilon": 0.25,
+      "use_median": true,
+      "cross_clip_only": true
+    }
+  },
+  "catalogue": {
+    "1": [
+      {
+        "clip_id": "1",
+        "local_track_id": 1,
+        "frame_ranges": [
+          [
+            1,
+            578
+          ],
+          [
+            581,
+            608
+          ]
+        ],
+        "num_frames": 606
+      },
+      {
+        "clip_id": "2",
+        "local_track_id": 10,
+        "frame_ranges": [
+          [
+            371,
+            438
+          ]
+        ],
+        "num_frames": 68
+      },
+      {
+        "clip_id": "3",
+        "local_track_id": 15,
+        "frame_ranges": [
+          [
+            2,
+            73
+          ],
+          [
+            84,
+            602
+          ]
+        ],
+        "num_frames": 591
+      }
+    ],
+    "2": [
+      {
+        "clip_id": "1",
+        "local_track_id": 2,
+        "frame_ranges": [
+          [
+            1,
+            595
+          ],
+          [
+            598,
+            607
+          ],
+          [
+            613,
+            629
+          ]
+        ],
+        "num_frames": 622
+      },
+      {
+        "clip_id": "2",
+        "local_track_id": 7,
+        "frame_ranges": [
+          [
+            46,
+            47
+          ],
+          [
+            49,
+            868
+          ]
+        ],
+        "num_frames": 822
+      },
+      {
+        "clip_id": "3",
+        "local_track_id": 14,
+        "frame_ranges": [
+          [
+            2,
+            86
+          ]
+        ],
+        "num_frames": 85
+      }
+    ],
+    "4": [
+      {
+        "clip_id": "2",
+        "local_track_id": 3,
+        "frame_ranges": [
+          [
+            2,
+            1072
+          ]
+        ],
+        "num_frames": 1071
+      }
+    ],
+    "5": [
+      {
+        "clip_id": "2",
+        "local_track_id": 4,
+        "frame_ranges": [
+          [
+            8,
+            14
+          ],
+          [
+            19,
+            21
+          ],
+          [
+            24,
+            36
+          ]
+        ],
+        "num_frames": 23
+      }
+    ],
+    "3": [
+      {
+        "clip_id": "2",
+        "local_track_id": 6,
+        "frame_ranges": [
+          [
+            38,
+            924
+          ]
+        ],
+        "num_frames": 887
+      },
+      {
+        "clip_id": "3",
+        "local_track_id": 13,
+        "frame_ranges": [
+          [
+            2,
+            602
+          ]
+        ],
+        "num_frames": 601
+      }
+    ],
+    "6": [
+      {
+        "clip_id": "2",
+        "local_track_id": 8,
+        "frame_ranges": [
+          [
+            330,
+            341
+          ]
+        ],
+        "num_frames": 12
+      }
+    ],
+    "7": [
+      {
+        "clip_id": "2",
+        "local_track_id": 9,
+        "frame_ranges": [
+          [
+            360,
+            368
+          ],
+          [
+            370,
+            377
+          ]
+        ],
+        "num_frames": 17
+      }
+    ],
+    "8": [
+      {
+        "clip_id": "2",
+        "local_track_id": 11,
+        "frame_ranges": [
+          [
+            400,
+            447
+          ],
+          [
+            449,
+            477
+          ]
+        ],
+        "num_frames": 77
+      }
+    ],
+    "9": [
+      {
+        "clip_id": "2",
+        "local_track_id": 12,
+        "frame_ranges": [
+          [
+            786,
+            789
+          ]
+        ],
+        "num_frames": 4
+      }
+    ],
+    "10": [
+      {
+        "clip_id": "3",
+        "local_track_id": 16,
+        "frame_ranges": [
+          [
+            118,
+            495
+          ]
+        ],
+        "num_frames": 378
+      }
+    ],
+    "11": [
+      {
+        "clip_id": "3",
+        "local_track_id": 17,
+        "frame_ranges": [
+          [
+            135,
+            377
+          ]
+        ],
+        "num_frames": 243
+      }
+    ],
+    "12": [
+      {
+        "clip_id": "3",
+        "local_track_id": 18,
+        "frame_ranges": [
+          [
+            173,
+            525
+          ],
+          [
+            550,
+            551
+          ]
+        ],
+        "num_frames": 355
+      }
+    ],
+    "13": [
+      {
+        "clip_id": "3",
+        "local_track_id": 20,
+        "frame_ranges": [
+          [
+            213,
+            213
+          ],
+          [
+            217,
+            226
+          ]
+        ],
+        "num_frames": 11
+      }
+    ],
+    "14": [
+      {
+        "clip_id": "3",
+        "local_track_id": 21,
+        "frame_ranges": [
+          [
+            408,
+            452
+          ]
+        ],
+        "num_frames": 45
+      }
+    ],
+    "15": [
+      {
+        "clip_id": "3",
+        "local_track_id": 22,
+        "frame_ranges": [
+          [
+            427,
+            427
+          ]
+        ],
+        "num_frames": 1
+      }
+    ],
+    "16": [
+      {
+        "clip_id": "3",
+        "local_track_id": 23,
+        "frame_ranges": [
+          [
+            495,
+            497
+          ]
+        ],
+        "num_frames": 3
+      }
+    ],
+    "17": [
+      {
+        "clip_id": "3",
+        "local_track_id": 25,
+        "frame_ranges": [
+          [
+            595,
+            602
+          ]
+        ],
+        "num_frames": 8
+      }
+    ],
+    "18": [
+      {
+        "clip_id": "4",
+        "local_track_id": 26,
+        "frame_ranges": [
+          [
+            2,
+            274
+          ]
+        ],
+        "num_frames": 273
+      }
+    ],
+    "19": [
+      {
+        "clip_id": "4",
+        "local_track_id": 27,
+        "frame_ranges": [
+          [
+            37,
+            42
+          ]
+        ],
+        "num_frames": 6
+      }
+    ],
+    "20": [
+      {
+        "clip_id": "4",
+        "local_track_id": 28,
+        "frame_ranges": [
+          [
+            108,
+            708
+          ]
+        ],
+        "num_frames": 601
+      }
+    ],
+    "21": [
+      {
+        "clip_id": "4",
+        "local_track_id": 30,
+        "frame_ranges": [
+          [
+            314,
+            848
+          ]
+        ],
+        "num_frames": 535
+      }
+    ]
+  }
+}

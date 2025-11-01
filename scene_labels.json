@@ -1,0 +1,22 @@
+[
+    {
+        "clip_id": "6903a03031dff600ce98d764",
+        "label": "normal",
+        "max_confidence": 0.0
+    },
+    {
+        "clip_id": "6903a03031dff600ce98d765",
+        "label": "normal",
+        "max_confidence": 0.0
+    },
+    {
+        "clip_id": "6903a03031dff600ce98d766",
+        "label": "normal",
+        "max_confidence": 0.0
+    },
+    {
+        "clip_id": "6903a03031dff600ce98d767",
+        "label": "crime",
+        "max_confidence": 0.0563
+    }
+]
