@@ -189,14 +189,14 @@ def cluster_tracklets(dist_matrix: np.ndarray,
                       cluster_selection_epsilon: float = 0.025,
                       cluster_selection_method: str = "leaf") -> np.ndarray:
     """
-    Cluster tracklets using a custom greedy algorithm with max cluster size of 3.
+    Cluster tracklets using a custom greedy algorithm.
 
     UPDATED: Enforce CROSS-CLIP constraint — a cluster may contain at most one
     tracklet from any given clip_id. This is stronger than pairwise cannot-links
     because it prevents transitive merges from introducing duplicate clip_ids.
     """
     print(
-        f"Using custom greedy clustering with max size 3, epsilon={cluster_selection_epsilon} (cross-clip only)"
+        f"Using custom greedy clustering, epsilon={cluster_selection_epsilon} (cross-clip only)"
     )
 
     n = dist_matrix.shape[0]
@@ -242,7 +242,7 @@ def cluster_tracklets(dist_matrix: np.ndarray,
             rank[px] += 1
         return True
 
-    # Greedily merge closest pairs if within epsilon, size <= 3, and CROSS-CLIP constraint holds
+    # Greedily merge closest pairs if within epsilon, and CROSS-CLIP constraint holds
     for dist, a, b in sorted_pairs:
         if dist > cluster_selection_epsilon:
             break
@@ -251,9 +251,6 @@ def cluster_tracklets(dist_matrix: np.ndarray,
             continue
         # Enforce: no duplicate clip_ids inside a cluster
         if not comp_clip_sets[ra].isdisjoint(comp_clip_sets[rb]):
-            continue
-        # Enforce max cluster size
-        if sizes[ra] + sizes[rb] > 3:
             continue
         union(ra, rb)
 
@@ -358,7 +355,7 @@ def generate_person_catalogue(
       4) Apply cannot-links:
          - co-occurring tracklets in same (clip_id, frame)
          - ALL pairs from the same clip (enforces cross-clip-only clustering)
-      5) Cluster tracklets with custom greedy algorithm (max size 3) that ALSO
+      5) Cluster tracklets with custom greedy algorithm that ALSO
          enforces cross-clip constraint during merges
       6) Assign IDs and build catalogue (optionally save to JSON)
     """
