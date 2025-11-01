@@ -4,7 +4,7 @@
     "total_tracklets": 26,
     "parameters": {
       "min_cluster_size": 2,
-      "cluster_selection_epsilon": 0.25,
+      "cluster_selection_epsilon": 0.2,
       "use_median": true,
       "cross_clip_only": true
     }

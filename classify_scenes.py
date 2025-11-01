@@ -155,6 +155,7 @@ def classify_scenes(
 ):
     """
     Classifies each video clip as 'normal' or 'crime' using a model-based approach.
+    For crime segments, extracts the frames and unique people IDs (track IDs) involved in those frames.
     """
     print("Starting scene classification (model-based)...")
 
@@ -177,11 +178,30 @@ def classify_scenes(
             video_path, processor, model, device, crime_classes_lower, num_frames
         )
 
+        max_frames = len(sample.frames)
         if final_label == "crime":
             for seg in crime_segments:
+                involved = set()
+                start_frame = seg["start"] + 1  # Convert to 1-indexed
+                end_frame = seg["end"] + 1      # Convert to 1-indexed
+                frames_involved = []
+                for f in range(start_frame, end_frame + 1):
+                    if f > max_frames:
+                        break  # Safety check if segment exceeds video length
+                    frames_involved.append(f)
+                    if "detections" in sample.frames[f]:
+                        frame_dets = sample.frames[f]["detections"].detections
+                        for det in frame_dets:
+                            if det.index is not None:
+                                involved.add(det.index)
+
+                seg["frames"] = frames_involved
+                seg["involved_people"] = sorted(list(involved))
+
                 print(
                     f"Crime detected in clip {clip_id}: action '{seg['label']}' "
-                    f"(confidence: {seg['conf']:.2f}), frames {seg['start'] + 1}–{seg['end'] + 1}"
+                    f"(confidence: {seg['conf']:.2f}), frames {seg['start'] + 1}–{seg['end'] + 1}, "
+                    f"involved people: {seg['involved_people']}"
                 )
 
         results.append(
@@ -189,6 +209,7 @@ def classify_scenes(
                 "clip_id": clip_id,
                 "label": final_label,
                 "max_confidence": round(confidence, 4),
+                "crime_segments": crime_segments,
             }
         )
 

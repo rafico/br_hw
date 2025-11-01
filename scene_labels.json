@@ -1,22 +1,83 @@
 [
     {
-        "clip_id": "6903a03031dff600ce98d764",
+        "clip_id": "69065914a0bf56461078e105",
         "label": "normal",
-        "max_confidence": 0.0
+        "max_confidence": 0.0,
+        "crime_segments": []
     },
     {
-        "clip_id": "6903a03031dff600ce98d765",
+        "clip_id": "69065914a0bf56461078e106",
         "label": "normal",
-        "max_confidence": 0.0
+        "max_confidence": 0.0,
+        "crime_segments": []
     },
     {
-        "clip_id": "6903a03031dff600ce98d766",
+        "clip_id": "69065914a0bf56461078e107",
         "label": "normal",
-        "max_confidence": 0.0
+        "max_confidence": 0.0,
+        "crime_segments": []
     },
     {
-        "clip_id": "6903a03031dff600ce98d767",
+        "clip_id": "69065914a0bf56461078e108",
         "label": "crime",
-        "max_confidence": 0.0563
+        "max_confidence": 0.0563,
+        "crime_segments": [
+            {
+                "start": 224,
+                "end": 239,
+                "label": "sword fighting",
+                "conf": 0.056070249527692795,
+                "frames": [
+                    225,
+                    226,
+                    227,
+                    228,
+                    229,
+                    230,
+                    231,
+                    232,
+                    233,
+                    234,
+                    235,
+                    236,
+                    237,
+                    238,
+                    239,
+                    240
+                ],
+                "involved_people": [
+                    26,
+                    28
+                ]
+            },
+            {
+                "start": 256,
+                "end": 271,
+                "label": "high kick",
+                "conf": 0.05626930296421051,
+                "frames": [
+                    257,
+                    258,
+                    259,
+                    260,
+                    261,
+                    262,
+                    263,
+                    264,
+                    265,
+                    266,
+                    267,
+                    268,
+                    269,
+                    270,
+                    271,
+                    272
+                ],
+                "involved_people": [
+                    26,
+                    28
+                ]
+            }
+        ]
     }
 ]
