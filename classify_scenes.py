@@ -1,194 +1,203 @@
+import os
 import json
 import cv2
 import torch
-import numpy as np
 import fiftyone as fo
-from dataclasses import dataclass
-from tqdm import tqdm  # Import tqdm for progress bars
-from typing import Any, Dict, List, Tuple
+from typing import Any, List, Tuple, Set, Dict
+from tqdm import tqdm
 
 # --- Model & Heuristic Configuration ---
 
-# 1. Action Recognition Model (for primary label)
-# We use a VideoMAE model fine-tuned on the Kinetics-400 dataset.
 MODEL_NAME = "MCG-NJU/videomae-base-finetuned-kinetics"
-NUM_FRAMES_SAMPLED = 16  # VideoMAE expects 16 frames
-
-# Keywords to identify "crime" classes within the model's 400 labels
-# We will search the model's config for labels containing these strings.
 CRIME_KEYWORDS = {
     "fighting", "punch", "kick", "slap", "headbutting", "wrestling",
     "shooting", "robbery", "stealing", "pickpocketing", "assault", "theft"
 }
 
-
 # --- Action Recognition (Model-Based) Helpers ---
 
-def load_action_recognition_model() -> Tuple[Any, Any, Any, set]:
+def load_action_recognition_model() -> Tuple[Any, Any, str, Set[str], int]:
     """
     Loads the VideoMAE processor and model from Hugging Face.
-    Also dynamically builds the set of CRIME_CLASSES.
+    Also dynamically builds the set of crime-related classes (lower-cased).
+    Returns: (processor, model, device, crime_classes_lower, num_frames)
     """
     try:
         from transformers import VideoMAEImageProcessor, VideoMAEForVideoClassification
-    except ImportError:
-        print("Error: 'transformers' library not found.")
-        print("Please run: pip install transformers")
-        exit(1)
+    except ImportError as e:
+        raise RuntimeError(
+            "Missing dependency: transformers. Install with `pip install transformers`"
+        ) from e
 
-    print(f"Loading action recognition model: {MODEL_NAME}...")
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     try:
         processor = VideoMAEImageProcessor.from_pretrained(MODEL_NAME)
-        model = VideoMAEForVideoClassification.from_pretrained(MODEL_NAME).to(DEVICE)
+        model = VideoMAEForVideoClassification.from_pretrained(MODEL_NAME).to(device)
     except Exception as e:
-        print(f"Error loading model '{MODEL_NAME}'.")
-        print("Please check your internet connection and if the model name is correct.")
-        print(f"Details: {e}")
-        exit(1)
+        raise RuntimeError(
+            f"Error loading model '{MODEL_NAME}'. Check connectivity and model name."
+        ) from e
 
     model.eval()
 
-    # Dynamically find all "crime" related labels from the model's config
-    crime_classes = set()
-    if model.config.id2label:
+    # Discover crime-like labels from the model's label space
+    crime_classes_lower: Set[str] = set()
+    if getattr(model.config, "id2label", None):
         for label_name in model.config.id2label.values():
-            for keyword in CRIME_KEYWORDS:
-                if keyword in label_name.lower():
-                    crime_classes.add(label_name)
+            lname = label_name.lower()
+            if any(kw in lname for kw in CRIME_KEYWORDS):
+                crime_classes_lower.add(lname)
 
-    if not crime_classes:
-        print(f"Warning: No crime keywords {CRIME_KEYWORDS} found in model labels.")
-        print("Using fallback list: {'street fighting', 'headbutting', 'punching'}")
-        crime_classes = {"street fighting", "headbutting", "punching"}
-    else:
-        print(f"Model loaded. Identified {len(crime_classes)} crime-related classes:")
-        print(f"  {crime_classes}")
+    if not crime_classes_lower:
+        # Fallback if none were found
+        print(
+            f"Warning: No crime keywords {CRIME_KEYWORDS} found in model labels. "
+            "Using fallback list."
+        )
+        crime_classes_lower = {"street fighting", "headbutting", "punching"}
 
-    return processor, model, DEVICE, crime_classes
+    num_frames = getattr(model.config, "num_frames", 16)
+
+    return processor, model, device, crime_classes_lower, num_frames
 
 
-def sample_video_frames(video_path: str, num_frames: int) -> List[np.ndarray]:
+def classify_clip_action(
+    video_path: str,
+    processor: Any,
+    model: Any,
+    device: str,
+    crime_classes_lower: Set[str],
+    num_frames: int,
+) -> Tuple[str, float, List[Dict[str, Any]]]:
     """
-    Samples N frames uniformly from a video file using cv2.
+    Runs the action recognition model on the entire video by processing
+    non-overlapping segments of `num_frames` frames.
+
+    Returns:
+        (final_label, max_confidence, crime_segments)
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Error: Could not open video file {video_path}")
-        return []
+        return "undetermined", 0.0, []
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames == 0:
-        cap.release()
-        return []
-
-    # Get frame indices to sample
-    indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-
-    frames = []
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if ret:
-            # Convert BGR (cv2 default) to RGB (model expects)
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-    cap.release()
-    return frames
-
-
-def classify_clip_action(
-        video_path: str,
-        processor: Any,
-        model: Any,
-        device: str
-) -> Tuple[str, float]:
-    """
-    Runs the action recognition model on a video file.
-
-    Returns:
-        (predicted_label, confidence_score)
-    """
-    frames = sample_video_frames(video_path, NUM_FRAMES_SAMPLED)
-    if not frames:
-        return "undetermined", 0.0
+    crime_segments: List[Dict[str, Any]] = []
+    max_conf = 0.0
+    frame_idx = 0
 
     try:
-        # Preprocess the frames
-        inputs = processor(frames, return_tensors="pt")
+        while True:
+            frames = []
+            for _ in range(num_frames):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                # Convert BGR -> RGB for the processor
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                frame_idx += 1
 
-        # Run inference
-        with torch.no_grad():
-            inputs_on_device = {k: v.to(device) for k, v in inputs.items()}
-            outputs = model(**inputs_on_device)
-            logits = outputs.logits
+            if not frames:
+                break
 
-        # Get prediction
-        predicted_class_idx = logits.argmax(-1).item()
-        predicted_label = model.config.id2label[predicted_class_idx]
+            collected = len(frames)
+            start = frame_idx - collected
 
-        # Get confidence
-        confidence = logits.softmax(-1)[0, predicted_class_idx].item()
+            # Pad last frame if we ran out near EOF
+            while len(frames) < num_frames:
+                frames.append(frames[-1])
 
-        return predicted_label, confidence
+            try:
+                inputs = processor(frames, return_tensors="pt")
+                with torch.inference_mode():
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
+                    logits = model(**inputs).logits
 
-    except Exception as e:
-        print(f"Error during model inference for {video_path}: {e}")
-        return "error", 0.0
+                pred_idx = int(logits.argmax(-1).item())
+                predicted_label = model.config.id2label[pred_idx]
+                predicted_label_l = predicted_label.lower()
+                confidence = float(torch.softmax(logits, dim=-1)[0, pred_idx].item())
+
+                # Decide crime: primary = discovered classes; secondary = keyword substring
+                is_crime = (
+                    predicted_label_l in crime_classes_lower
+                    or any(kw in predicted_label_l for kw in CRIME_KEYWORDS)
+                )
+
+                if is_crime:
+                    segment = {
+                        "start": start,
+                        "end": frame_idx - 1,
+                        "label": predicted_label,
+                        "conf": confidence,
+                    }
+                    crime_segments.append(segment)
+                    max_conf = max(max_conf, confidence)
+
+            except Exception as e:
+                print(
+                    f"Error during model inference for segment starting at frame {start} "
+                    f"in {video_path}: {e}"
+                )
+    finally:
+        cap.release()
+
+    final_label = "crime" if crime_segments else "normal"
+    return final_label, max_conf, crime_segments
 
 
 # --- Main Function ---
 
 def classify_scenes(
-        dataset: fo.Dataset,
-        all_detections: List[dataclass],  # Unused now, but kept for signature
-        output_file: str = "scene_labels.json"
+    dataset: fo.Dataset,
+    all_detections: List[Any] = None,  # kept for signature; not used
+    output_file: str = "scene_labels.json",
 ):
     """
     Classifies each video clip as 'normal' or 'crime' using a model-based approach.
     """
-
     print("Starting scene classification (model-based)...")
 
-    # 1. Load the Action Recognition model and get "crime" classes
     try:
-        processor, model, device, CRIME_CLASSES = load_action_recognition_model()
+        processor, model, device, crime_classes_lower, num_frames = (
+            load_action_recognition_model()
+        )
     except Exception as e:
         print(f"Failed to initialize action recognition model: {e}")
         print("Aborting classification.")
         return
 
-    # 4. Analyze each clip
     results = []
-
-    # Use tqdm for progress bar over the samples
-    samples = list(dataset)  # Load samples into a list for tqdm
-    for sample in tqdm(samples, desc="Classifying clips"):
-        clip_id = sample.filepath.split('/')[-1].split('.')[0]
+    total = len(dataset)
+    for sample in tqdm(dataset, total=total, desc="Classifying clips"):
+        clip_id = str(sample.id)  # robust unique ID
         video_path = sample.filepath
 
-        # --- Part 1: Model-Based Classification ---
-        model_label, confidence = classify_clip_action(
-            video_path, processor, model, device
+        final_label, confidence, crime_segments = classify_clip_action(
+            video_path, processor, model, device, crime_classes_lower, num_frames
         )
 
-        final_label = "crime" if model_label in CRIME_CLASSES else "normal"
+        if final_label == "crime":
+            for seg in crime_segments:
+                print(
+                    f"Crime detected in clip {clip_id}: action '{seg['label']}' "
+                    f"(confidence: {seg['conf']:.2f}), frames {seg['start'] + 1}–{seg['end'] + 1}"
+                )
 
-        print(f'{model_label}')
+        results.append(
+            {
+                "clip_id": clip_id,
+                "label": final_label,
+                "max_confidence": round(confidence, 4),
+            }
+        )
 
-        results.append({
-            "clip_id": clip_id,
-            "label": final_label
-        })
-
-    # 5. Write to output file
-    # Sort results by clip_id for consistent output
-    results.sort(key=lambda x: x['clip_id'])
+    # Sort for consistent output (by unique id string)
+    results.sort(key=lambda x: x["clip_id"])
 
     try:
-        with open(output_file, 'w') as f:
-            json.dump(results, f, indent=4)
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=4, ensure_ascii=False)
         print(f"\nSuccessfully wrote model-based scene labels to {output_file}")
     except Exception as e:
         print(f"\nError writing scene labels to {output_file}: {e}")

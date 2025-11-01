@@ -185,9 +185,8 @@ def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
 def cluster_tracklets(dist_matrix: np.ndarray,
                       tracklet_info: List[Dict[str, Any]],
                       min_cluster_size: int = 2,
-                      min_samples: int = 1,
                       cluster_selection_epsilon: float = 0.025,
-                      cluster_selection_method: str = "leaf") -> np.ndarray:
+                      ) -> np.ndarray:
     """
     Cluster tracklets using a custom greedy algorithm.
 
@@ -343,9 +342,7 @@ def generate_person_catalogue(
         all_detections: List[Dict[str, Any]],
         output_file: str = "catalogue_simple.json",
         min_cluster_size: int = 2,
-        min_samples: int = 2,
         cluster_selection_epsilon: float = 0.2,
-        cluster_selection_method: str = "leaf",
         use_median: bool = True,
 ):
     """
@@ -394,9 +391,7 @@ def generate_person_catalogue(
         dist_matrix,
         tracklet_info,
         min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
         cluster_selection_epsilon=cluster_selection_epsilon,
-        cluster_selection_method=cluster_selection_method
     )
 
     # Assign person IDs and build catalogue
@@ -409,9 +404,7 @@ def generate_person_catalogue(
         "total_tracklets": len(tracklet_info),
         "parameters": {
             "min_cluster_size": min_cluster_size,
-            "min_samples": min_samples,
             "cluster_selection_epsilon": cluster_selection_epsilon,
-            "cluster_selection_method": cluster_selection_method,
             "use_median": use_median,
             "cross_clip_only": True,
         },
