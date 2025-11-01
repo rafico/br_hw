@@ -12,3 +12,4 @@ fiftyone-brain
 scikit-learn
 scipy
 tqdm
+umap-learn
