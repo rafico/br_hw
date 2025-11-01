@@ -8,10 +8,6 @@ from sklearn.preprocessing import normalize
 from sklearn.metrics import pairwise_distances
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
-
 def _normalize_rows(arr: np.ndarray) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float64)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
@@ -57,42 +53,6 @@ def _check_distance_matrix(D: np.ndarray):
         raise ValueError("Distance matrix has negative entries.")
     if not np.allclose(D, D.T, atol=1e-8):
         raise ValueError("Distance matrix must be symmetric.")
-
-
-def build_cannot_links_from_detections(
-    all_detections: List[Dict[str, Any]],
-    tracklet_info: List[Dict[str, Any]]
-) -> List[Tuple[int, int]]:
-    """
-    Returns list of index pairs (i, j) such that tracklets i and j
-    have detections in the SAME (clip_id, frame_num) -> cannot be the same person.
-    Only pairs that survived into `tracklet_info` are returned.
-    """
-    # map (clip_id, track_id) -> index in tracklet_info
-    id2idx: Dict[Tuple[str, int], int] = {
-        (t["clip_id"], t["track_id"]): i for i, t in enumerate(tracklet_info)
-    }
-
-    # map (clip_id, frame_num) -> set of indices present in that frame
-    cooc: Dict[Tuple[str, int], set] = defaultdict(set)
-    for d in all_detections:
-        clip = str(d["clip_id"])
-        tid = int(d["track_id"])
-        frm = int(d["frame_num"])
-        key = (clip, tid)
-        if key not in id2idx:
-            continue  # tracklet filtered out upstream
-        cooc[(clip, frm)].add(id2idx[key])
-
-    pairs = set()
-    for _, idxs in cooc.items():
-        if len(idxs) > 1:
-            s = sorted(idxs)
-            for a in range(len(s)):
-                for b in range(a + 1, len(s)):
-                    pairs.add((s[a], s[b]))
-    return sorted(pairs)
-
 
 def build_same_clip_cannot_links(tracklet_info: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
     """
@@ -350,7 +310,6 @@ def generate_person_catalogue(
       2) Compute one representative embedding per tracklet
       3) Build cosine distance matrix
       4) Apply cannot-links:
-         - co-occurring tracklets in same (clip_id, frame)
          - ALL pairs from the same clip (enforces cross-clip-only clustering)
       5) Cluster tracklets with custom greedy algorithm that ALSO
          enforces cross-clip constraint during merges
@@ -371,12 +330,6 @@ def generate_person_catalogue(
 
     # Build distance matrix
     dist_matrix = build_distance_matrix(tracklet_info)
-
-    # Cannot-links from co-occurrence
-    cannot_pairs = build_cannot_links_from_detections(all_detections, tracklet_info)
-    if cannot_pairs:
-        print(f"Cannot-links from co-occurrence: {len(cannot_pairs)} pairs")
-        apply_cannot_links_to_distance_matrix(dist_matrix, cannot_pairs, max_distance=2.0)
 
     # Cannot-links from SAME CLIP to enforce cross-clip-only clustering
     same_clip_pairs = build_same_clip_cannot_links(tracklet_info)

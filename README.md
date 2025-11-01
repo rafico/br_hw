@@ -1,4 +1,4 @@
-# Video Person Re-Identification and Scene Classification
+# A Toy - Video Person Re-Identification and Scene Classification
 
 A toy system for detecting, tracking, and re-identifying persons across multiple video clips, with automatic scene classification for normal vs. crime detection.
 
@@ -131,7 +131,6 @@ reid_extractor = load_reid_extractor(
 ```
 
 ### Clustering Parameters
-
 Adjust in `run.py` when calling `generate_person_catalogue()`:
 
 ```python
@@ -142,7 +141,6 @@ generate_person_catalogue(
     use_median=True                   # Use median vs. mean for representatives
 )
 ```
-
 ### Scene Classification
 
 Modify crime keywords in `classify_scenes.py`:
@@ -154,7 +152,6 @@ CRIME_KEYWORDS = {
     "pickpocketing", "assault", "theft"
 }
 ```
-
 ## Key Components
 
 ### DetectionReIDExtractor (`reid_model.py`)
@@ -162,7 +159,6 @@ CRIME_KEYWORDS = {
 Extracts appearance features from person crops:
 - Uses torchreid's OSNet models
 - Handles batch processing for efficiency
-- Supports both BGR and RGB inputs
 
 ### Person Catalogue Generator (`generate_person_catalogue.py`)
 
@@ -175,7 +171,6 @@ Cross-clip person matching with constraints:
 
 Action-based scene understanding:
 - Uses VideoMAE pre-trained on Kinetics-400
-- Samples 16 frames uniformly from each clip
 - Maps detected actions to crime/normal categories
 
 ## Advanced Features
@@ -201,16 +196,6 @@ dataset = fo.load_dataset("re_id")
 session = fo.launch_app(dataset)
 ```
 
-## Troubleshooting
-
-### CUDA Out of Memory
-
-Reduce batch sizes:
-```python
-# In run.py
-reid_extractor = load_reid_extractor(batch_size=16)  # Default: 32
-```
-
 ### Model Download Issues
 
 Models are downloaded automatically from:
@@ -219,12 +204,3 @@ Models are downloaded automatically from:
 - VideoMAE: Hugging Face Hub
 
 Ensure internet connectivity on first run.
-
-### No Crime Classes Found
-
-The system falls back to default classes. To customize:
-1. Check available Kinetics-400 labels
-2. Update `CRIME_KEYWORDS` in `classify_scenes.py`
-
-
-
