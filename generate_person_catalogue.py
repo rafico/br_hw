@@ -122,7 +122,10 @@ def compute_tracklet_info(tracklets: Dict[Tuple[str, int], List[Dict[str, Any]]]
 def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
                           print_distances: bool = False
                           ) -> np.ndarray:
-    """Build cosine distance matrix from tracklet embeddings."""
+    """
+    Build cosine distance matrix from tracklet embeddings.
+    Prints tracklet order and pairwise distances for debugging.
+    """
     print("Tracklet order:")
     for i, t in enumerate(tracklet_info):
         print(f"  {i}: {t['clip_id']}_{t['track_id']}")
@@ -149,10 +152,11 @@ def cluster_tracklets(dist_matrix: np.ndarray,
                       ) -> np.ndarray:
     """
     Cluster tracklets using a custom greedy algorithm.
-
-    UPDATED: Enforce CROSS-CLIP constraint — a cluster may contain at most one
+    Enforces CROSS-CLIP constraint — a cluster may contain at most one
     tracklet from any given clip_id. This is stronger than pairwise cannot-links
     because it prevents transitive merges from introducing duplicate clip_ids.
+    Prints clustering details for debugging.
+    Returns an array of cluster labels (-1 for noise/singletons).
     """
     print(
         f"Using custom greedy clustering, epsilon={cluster_selection_epsilon} (cross-clip only)"
@@ -255,7 +259,7 @@ def cluster_tracklets(dist_matrix: np.ndarray,
 
 
 def assign_person_ids(tracklet_info: List[Dict[str, Any]], labels: np.ndarray):
-    """Assign global person IDs to tracklets based on cluster labels."""
+    """Assign global person IDs to tracklets based on cluster labels. Modifies tracklet_info in place."""
     unique = [l for l in np.unique(labels) if l != -1]
     cluster_to_global = {c: i + 1 for i, c in enumerate(unique)}
     next_gid = len(unique) + 1
@@ -313,7 +317,9 @@ def generate_person_catalogue(
          - ALL pairs from the same clip (enforces cross-clip-only clustering)
       5) Cluster tracklets with custom greedy algorithm that ALSO
          enforces cross-clip constraint during merges
-      6) Assign IDs and build catalogue (optionally save to JSON)
+      6) Assign IDs and build catalogue (and save to JSON)
+    Prints progress and summary information.
+    Returns the catalogue.
     """
     if not all_detections:
         print("No detections found.")
