@@ -103,7 +103,7 @@ def compute_tracklet_info(tracklets: Dict[Tuple[str, int], List[Dict[str, Any]]]
                           use_median: bool = False) -> List[Dict[str, Any]]:
     """Compute representative embeddings and frame ranges for each tracklet."""
     tracklet_info = []
-    for (clip_id, track_id), dets in tracklets.items():
+    for (clip_id, track_id), dets in sorted(tracklets.items(), key=lambda x: (x[0][0], x[0][1])):
         embeds = np.array([det["embeddings"] for det in dets], dtype=np.float64)
         rep = compute_tracklet_representative(embeds, use_median=use_median)
         frames = sorted([int(det["frame_num"]) for det in dets])
@@ -126,9 +126,10 @@ def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
     Build cosine distance matrix from tracklet embeddings.
     Prints tracklet order and pairwise distances for debugging.
     """
-    print("Tracklet order:")
-    for i, t in enumerate(tracklet_info):
-        print(f"  {i}: {t['clip_id']}_{t['track_id']}")
+    if print_distances:
+        print("Tracklet order:")
+        for i, t in enumerate(tracklet_info):
+            print(f"  {i}: {t['clip_id']}_{t['track_id']}")
 
     X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float64)
     X = normalize(X)
@@ -138,8 +139,9 @@ def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
     dist_matrix = np.clip(dist_matrix, 0.0, 2.0)
     dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float64)
 
-    print("Pairwise cosine distances between tracklet representatives:")
-    print(dist_matrix)
+    if print_distances:
+        print("Pairwise cosine distances between tracklet representatives:")
+        print(dist_matrix)
 
     _check_distance_matrix(dist_matrix)
     return dist_matrix
@@ -308,6 +310,7 @@ def generate_person_catalogue(
         min_cluster_size: int = 2,
         cluster_selection_epsilon: float = 0.2,
         use_median: bool = True,
+        print_distances: bool = False,
 ):
     """
       1) Group detections by (clip_id, track_id) => tracklets
@@ -335,7 +338,7 @@ def generate_person_catalogue(
         return {}
 
     # Build distance matrix
-    dist_matrix = build_distance_matrix(tracklet_info)
+    dist_matrix = build_distance_matrix(tracklet_info, print_distances=print_distances)
 
     # Cannot-links from SAME CLIP to enforce cross-clip-only clustering
     same_clip_pairs = build_same_clip_cannot_links(tracklet_info)
@@ -343,7 +346,8 @@ def generate_person_catalogue(
         print(f"Cannot-links from same-clip constraint: {len(same_clip_pairs)} pairs")
         apply_cannot_links_to_distance_matrix(dist_matrix, same_clip_pairs, max_distance=2.0)
 
-    print(f'dist_matrix after constraints: {dist_matrix}')
+    if print_distances:
+        print(f'dist_matrix after constraints: {dist_matrix}')
 
     # Cluster (with cross-clip enforcement inside the algorithm too)
     labels = cluster_tracklets(

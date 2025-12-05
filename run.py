@@ -1,12 +1,12 @@
-import torch
-from pathlib import Path
-from boxmot import BotSort, BoostTrack, ByteTrack, StrongSort
+import argparse
+
 import cv2
-from ultralytics import YOLO
 import fiftyone as fo
 import fiftyone.brain as fob
-import argparse
 import numpy as np
+import torch
+from boxmot import ByteTrack
+from ultralytics import YOLO
 
 from reid_model import DetectionReIDExtractor
 from generate_person_catalogue import generate_person_catalogue
@@ -41,18 +41,23 @@ def load_reid_extractor(
     )
 
 
-def load_tracker(device: torch.device):
-    return ByteTrack(reid_weights=Path(''), device=device, half=False)
+def load_tracker():
+    """Initialize a fresh tracker for each video to avoid cross-clip bleed-through."""
+    return ByteTrack()
 
 
 def run_detection(model, frame, person_class_id):
-    """Run YOLO detection and filter for person class."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = model(rgb, conf=0.1, verbose=False)
+    """Run YOLO detection and filter for person class.
+
+    YOLO expects BGR input; we keep the original frame for detection/tracking and
+    return an RGB copy for downstream ReID feature extraction.
+    """
+    rgb_for_reid = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = model(frame, conf=0.1, verbose=False)
     result = results[0]
 
     if not result.boxes:
-        return rgb, np.empty((0, 6)), np.empty((0, 4))
+        return rgb_for_reid, np.empty((0, 6)), np.empty((0, 4))
 
     boxes = result.boxes.xyxy.cpu().numpy()
     confs = result.boxes.conf.cpu().numpy()
@@ -70,7 +75,7 @@ def run_detection(model, frame, person_class_id):
         detections = np.empty((0, 6))
         boxes = np.empty((0, 4))
 
-    return rgb, detections, boxes
+    return rgb_for_reid, detections, boxes
 
 
 def extract_reid_features(reid_extractor, rgb, boxes, detections):
@@ -92,7 +97,7 @@ def convert_to_fiftyone_detections(tracks, features, person_label, width, height
     if tracks.shape[0] == 0:
         return frame_detections
 
-    # Normalize features to unit length
+    # Normalize features to unit length and keep indexable by detection order
     processed_features = []
     if features is not None:
         feats = np.asarray(features, dtype=np.float32)
@@ -104,7 +109,7 @@ def convert_to_fiftyone_detections(tracks, features, person_label, width, height
         feats = feats / norms
         processed_features = [f for f in feats]
 
-    for i, track in enumerate(tracks):
+    for track in tracks:
         x1, y1, x2, y2, track_id, conf, _, _ = track
         rel_box = [
             x1 / width,
@@ -113,7 +118,12 @@ def convert_to_fiftyone_detections(tracks, features, person_label, width, height
             (y2 - y1) / height,
         ]
 
-        embedding = processed_features[i] if processed_features else None
+        det_index = int(track[7]) if track.shape[0] >= 8 else None
+        embedding = None
+        if processed_features and det_index is not None and 0 <= det_index < len(processed_features):
+            # ByteTrack returns the detection index in the last column; use it to
+            # keep embeddings aligned even when the tracker reorders outputs.
+            embedding = processed_features[det_index]
 
         frame_detections.append(
             fo.Detection(
@@ -141,8 +151,8 @@ def process_single_video(sample, model, person_class_id, person_label,
         cap.release()
         return False
 
-    frame_number = 0
     sample.frames.clear()
+    frame_number = 0
 
     with torch.inference_mode():
         while True:
@@ -161,7 +171,7 @@ def process_single_video(sample, model, person_class_id, person_label,
             )
 
             # Update tracker
-            tracks = tracker.update(detections, frame)
+            tracks = tracker.update(detections, frame, features)
 
             # Visualize if requested
             if show_visuals:
@@ -192,12 +202,12 @@ def process_video_file(dataset, show_visuals: bool = False):
     # Load components
     model, person_class_id = load_detector("yolo11m.pt")
     reid_extractor = load_reid_extractor(device=device.type)
-    tracker = load_tracker(device)
 
     person_label = model.names.get(person_class_id, "person")
 
     # Process each video
     for sample in dataset.iter_samples(progress=True):
+        tracker = load_tracker()
         success = process_single_video(
             sample, model, person_class_id, person_label,
             reid_extractor, tracker, show_visuals
@@ -327,10 +337,6 @@ def main():
 
     if viz_key not in brain_runs or args.overwrite_algo:
         compute_visualization(frame_view, sim_key, viz_key)
-
-    # cache clip_id per sample once
-    sample_ids = {fs.sample_id for fs in frame_view}
-    clip_by_id = {sid: Path(dataset[sid].filepath).stem for sid in sample_ids}
 
     # Build / load cached detections
     all_detections = compute_or_load_all_detections(
