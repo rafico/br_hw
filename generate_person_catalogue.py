@@ -17,11 +17,11 @@ def _normalize_rows(arr: np.ndarray) -> np.ndarray:
 def compute_tracklet_representative(embeddings: np.ndarray, use_median: bool = False) -> np.ndarray:
     """
     Simple representative embedding: L2-normalize each, take mean or median, re-normalize.
-    Returns a 1D float64 vector.
+    Returns a 1D float32 vector.
     """
     if len(embeddings) == 0:
         raise ValueError("Tracklet has no embeddings")
-    embeds = _normalize_rows(np.asarray(embeddings, dtype=np.float64))
+    embeds = _normalize_rows(np.asarray(embeddings, dtype=np.float32))
     if use_median:
         emb = np.median(embeds, axis=0)
     else:
@@ -104,7 +104,7 @@ def compute_tracklet_info(tracklets: Dict[Tuple[str, int], List[Dict[str, Any]]]
     """Compute representative embeddings and frame ranges for each tracklet."""
     tracklet_info = []
     for (clip_id, track_id), dets in sorted(tracklets.items(), key=lambda x: (x[0][0], x[0][1])):
-        embeds = np.array([det["embeddings"] for det in dets], dtype=np.float64)
+        embeds = np.array([det["embeddings"] for det in dets], dtype=np.float32)
         rep = compute_tracklet_representative(embeds, use_median=use_median)
         frames = sorted([int(det["frame_num"]) for det in dets])
         tracklet_info.append(
@@ -131,13 +131,13 @@ def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
         for i, t in enumerate(tracklet_info):
             print(f"  {i}: {t['clip_id']}_{t['track_id']}")
 
-    X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float64)
+    X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
     X = normalize(X)
 
     dist_matrix = pairwise_distances(X, metric="cosine")
     np.fill_diagonal(dist_matrix, 0.0)
     dist_matrix = np.clip(dist_matrix, 0.0, 2.0)
-    dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float64)
+    dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float32)
 
     if print_distances:
         print("Pairwise cosine distances between tracklet representatives:")
