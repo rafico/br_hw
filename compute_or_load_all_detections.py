@@ -44,21 +44,28 @@ def load_all_detections(path: Path) -> List[Dict[str, Any]]:
     return json.loads(path.read_text())
 
 def compute_all_detections(frame_view, dataset) -> List[Dict[str, Any]]:
-    # cache clip_id per sample once
-    sample_ids = {fs.sample_id for fs in frame_view}
-    clip_by_id = {sid: Path(dataset[sid].filepath).stem for sid in sample_ids}
+    all_detections: List[Dict[str, Any]] = []
+    clip_by_id: Dict[Any, str] = {}
 
-    return [
-        {
-            "clip_id": clip_by_id[fs.sample_id],
-            "frame_num": fs.frame_number,
-            "track_id": det.index,
-            "embeddings": det.embeddings,  # converted on save
-        }
-        for fs in frame_view
-        for det in getattr(fs.detections, "detections", [])
-        if det.embeddings is not None
-    ]
+    for fs in frame_view:
+        sample_id = fs.sample_id
+        if sample_id not in clip_by_id:
+            clip_by_id[sample_id] = Path(dataset[sample_id].filepath).stem
+
+        clip_id = clip_by_id[sample_id]
+        detections = getattr(fs.detections, "detections", [])
+        all_detections.extend(
+            {
+                "clip_id": clip_id,
+                "frame_num": fs.frame_number,
+                "track_id": det.index,
+                "embeddings": det.embeddings,  # converted on save
+            }
+            for det in detections
+            if det.embeddings is not None
+        )
+
+    return all_detections
 
 def compute_or_load_all_detections(*, frame_view, dataset, dataset_dir: str, overwrite_algo: bool):
     cache_path = detections_cache_path(dataset_dir, dataset)
