@@ -184,23 +184,30 @@ def classify_scenes(
 
         max_frames = len(sample.frames)
         if final_label == "crime":
+            frame_to_people: Dict[int, Set[int]] = {}
+            for frame_num in range(1, max_frames + 1):
+                frame_doc = sample.frames[frame_num]
+                if "detections" not in frame_doc:
+                    continue
+                frame_dets = frame_doc["detections"].detections
+                people = {det.index for det in frame_dets if det.index is not None}
+                if people:
+                    frame_to_people[frame_num] = people
+
             for seg in crime_segments:
-                involved = set()
-                start_frame = seg["start"] + 1  # Convert to 1-indexed
-                end_frame = seg["end"] + 1      # Convert to 1-indexed
-                frames_involved = []
-                for f in range(start_frame, end_frame + 1):
-                    if f > max_frames:
-                        break  # Safety check if segment exceeds video length
-                    frames_involved.append(f)
-                    if "detections" in sample.frames[f]:
-                        frame_dets = sample.frames[f]["detections"].detections
-                        for det in frame_dets:
-                            if det.index is not None:
-                                involved.add(det.index)
+                start_frame = max(1, seg["start"] + 1)  # Convert to 1-indexed
+                end_frame = min(max_frames, seg["end"] + 1)  # Bound to clip length
+                if end_frame < start_frame:
+                    frames_involved = []
+                    involved: Set[int] = set()
+                else:
+                    frames_involved = list(range(start_frame, end_frame + 1))
+                    involved = set()
+                    for frame_num in frames_involved:
+                        involved |= frame_to_people.get(frame_num, set())
 
                 seg["frames"] = frames_involved
-                seg["involved_people"] = sorted(list(involved))
+                seg["involved_people"] = sorted(involved)
 
                 print(
                     f"Crime detected in clip {clip_id}: action '{seg['label']}' "
