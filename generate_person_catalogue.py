@@ -6,10 +6,11 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 from sklearn.preprocessing import normalize
 from sklearn.metrics import pairwise_distances
+from sklearn.neighbors import NearestNeighbors
 
 
 def _normalize_rows(arr: np.ndarray) -> np.ndarray:
-    arr = np.asarray(arr, dtype=np.float64)
+    arr = np.asarray(arr, dtype=np.float32)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     return arr / np.where(norms == 0, 1.0, norms)
 
@@ -51,40 +52,8 @@ def _check_distance_matrix(D: np.ndarray):
         raise ValueError("Distance matrix contains non-finite values.")
     if (D < 0).any():
         raise ValueError("Distance matrix has negative entries.")
-    if not np.allclose(D, D.T, atol=1e-8):
+    if not np.allclose(D, D.T, atol=1e-6):
         raise ValueError("Distance matrix must be symmetric.")
-
-def build_same_clip_cannot_links(tracklet_info: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
-    """
-    For cross-clip re-ID, forbid merging any two tracklets from the SAME clip.
-    Returns list of index pairs (i, j) where tracklet_info[i]["clip_id"] == tracklet_info[j]["clip_id"].
-    """
-    by_clip: Dict[str, List[int]] = defaultdict(list)
-    for i, t in enumerate(tracklet_info):
-        by_clip[str(t["clip_id"])].append(i)
-
-    pairs: List[Tuple[int, int]] = []
-    for idxs in by_clip.values():
-        if len(idxs) < 2:
-            continue
-        idxs = sorted(idxs)
-        for a in range(len(idxs)):
-            for b in range(a + 1, len(idxs)):
-                pairs.append((idxs[a], idxs[b]))
-    return pairs
-
-
-def apply_cannot_links_to_distance_matrix(
-    D: np.ndarray,
-    cannot_pairs: List[Tuple[int, int]],
-    max_distance: float = 2.0
-) -> None:
-    """
-    In-place: push distances for cannot-link pairs to the maximum cosine distance.
-    """
-    for i, j in cannot_pairs:
-        D[i, j] = max_distance
-        D[j, i] = max_distance
 
 
 # ----------------------------
@@ -147,30 +116,62 @@ def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
     return dist_matrix
 
 
-def cluster_tracklets(dist_matrix: np.ndarray,
-                      tracklet_info: List[Dict[str, Any]],
-                      min_cluster_size: int = 2,
-                      cluster_selection_epsilon: float = 0.025,
-                      ) -> np.ndarray:
-    """
-    Cluster tracklets using a custom greedy algorithm.
-    Enforces CROSS-CLIP constraint — a cluster may contain at most one
-    tracklet from any given clip_id. This is stronger than pairwise cannot-links
-    because it prevents transitive merges from introducing duplicate clip_ids.
-    Prints clustering details for debugging.
-    Returns an array of cluster labels (-1 for noise/singletons).
-    """
-    print(
-        f"Using custom greedy clustering, epsilon={cluster_selection_epsilon} (cross-clip only)"
-    )
-
-    n = dist_matrix.shape[0]
-
-    # Get all pairs from upper triangle
-    i, j = np.triu_indices(n, k=1)
+def build_dense_candidate_pairs(
+        dist_matrix: np.ndarray,
+        cluster_selection_epsilon: float,
+) -> Tuple[List[Tuple[float, int, int]], int, float]:
+    """Build sorted candidate pairs from a dense distance matrix."""
+    i, j = np.triu_indices(dist_matrix.shape[0], k=1)
     dists = dist_matrix[i, j]
-    pairs = list(zip(dists, i, j))
-    sorted_pairs = sorted(pairs)  # sort by dist ascending
+    threshold = cluster_selection_epsilon * 1.1
+    keep = dists <= threshold
+    kept_idx = np.where(keep)[0]
+    pairs = [(float(dists[k]), int(i[k]), int(j[k])) for k in kept_idx]
+    pairs.sort()
+    return pairs, int(len(dists)), threshold
+
+
+def build_sparse_candidate_pairs(
+        tracklet_info: List[Dict[str, Any]],
+        cluster_selection_epsilon: float,
+) -> Tuple[List[Tuple[float, int, int]], int, float]:
+    """
+    Build candidate pairs via radius neighbors to avoid dense O(n^2) pair materialization.
+    Returns sorted (dist, i, j) pairs, number of possible pairs, and threshold used.
+    """
+    n = len(tracklet_info)
+    if n < 2:
+        return [], 0, cluster_selection_epsilon * 1.1
+
+    X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
+    X = normalize(X)
+    threshold = cluster_selection_epsilon * 1.1
+    total_possible = (n * (n - 1)) // 2
+
+    nn = NearestNeighbors(metric="cosine", algorithm="brute", radius=threshold)
+    nn.fit(X)
+    distances, neighbors = nn.radius_neighbors(X, return_distance=True)
+
+    pairs: List[Tuple[float, int, int]] = []
+    for src, (dists, nbrs) in enumerate(zip(distances, neighbors)):
+        for dist, dst in zip(dists, nbrs):
+            dst_i = int(dst)
+            if dst_i <= src:
+                continue
+            pairs.append((float(dist), int(src), dst_i))
+
+    pairs.sort()
+    return pairs, total_possible, threshold
+
+
+def _cluster_from_sorted_pairs(
+        sorted_pairs: List[Tuple[float, int, int]],
+        tracklet_info: List[Dict[str, Any]],
+        min_cluster_size: int,
+        cluster_selection_epsilon: float,
+) -> np.ndarray:
+    """Union-find clustering with cross-clip constraint using pre-sorted candidate pairs."""
+    n = len(tracklet_info)
 
     # Union-find structures
     parent = list(range(n))
@@ -214,7 +215,6 @@ def cluster_tracklets(dist_matrix: np.ndarray,
         ra, rb = find(a), find(b)
         if ra == rb:
             continue
-        # Enforce: no duplicate clip_ids inside a cluster
         if not comp_clip_sets[ra].isdisjoint(comp_clip_sets[rb]):
             continue
         union(ra, rb)
@@ -258,6 +258,64 @@ def cluster_tracklets(dist_matrix: np.ndarray,
         print(f"  Noise: {{{', '.join(noise_members)}}}")
 
     return labels
+
+
+def cluster_tracklets(dist_matrix: np.ndarray,
+                      tracklet_info: List[Dict[str, Any]],
+                      min_cluster_size: int = 2,
+                      cluster_selection_epsilon: float = 0.025,
+                      ) -> np.ndarray:
+    """
+    Cluster tracklets using a custom greedy algorithm.
+    Enforces CROSS-CLIP constraint — a cluster may contain at most one
+    tracklet from any given clip_id. This is stronger than pairwise cannot-links
+    because it prevents transitive merges from introducing duplicate clip_ids.
+    Prints clustering details for debugging.
+    Returns an array of cluster labels (-1 for noise/singletons).
+    """
+    print(
+        f"Using custom greedy clustering, epsilon={cluster_selection_epsilon} (cross-clip only)"
+    )
+
+    sorted_pairs, total_pairs, threshold = build_dense_candidate_pairs(
+        dist_matrix, cluster_selection_epsilon
+    )
+    print(
+        f"Pair pre-filter: kept {len(sorted_pairs):,}/{total_pairs:,} "
+        f"({(100.0 * len(sorted_pairs) / total_pairs) if total_pairs else 0.0:.1f}%) "
+        f"with dist <= {threshold:.4f}"
+    )
+    return _cluster_from_sorted_pairs(
+        sorted_pairs=sorted_pairs,
+        tracklet_info=tracklet_info,
+        min_cluster_size=min_cluster_size,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+    )
+
+
+def cluster_tracklets_sparse(
+        tracklet_info: List[Dict[str, Any]],
+        min_cluster_size: int = 2,
+        cluster_selection_epsilon: float = 0.025,
+) -> np.ndarray:
+    """Sparse radius-neighbor variant for large tracklet counts."""
+    print(
+        f"Using sparse radius-neighbor clustering, epsilon={cluster_selection_epsilon} (cross-clip only)"
+    )
+    sorted_pairs, total_pairs, threshold = build_sparse_candidate_pairs(
+        tracklet_info, cluster_selection_epsilon
+    )
+    print(
+        f"Sparse candidate graph: kept {len(sorted_pairs):,}/{total_pairs:,} "
+        f"({(100.0 * len(sorted_pairs) / total_pairs) if total_pairs else 0.0:.1f}%) "
+        f"with dist <= {threshold:.4f}"
+    )
+    return _cluster_from_sorted_pairs(
+        sorted_pairs=sorted_pairs,
+        tracklet_info=tracklet_info,
+        min_cluster_size=min_cluster_size,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+    )
 
 
 def assign_person_ids(tracklet_info: List[Dict[str, Any]], labels: np.ndarray):
@@ -311,16 +369,16 @@ def generate_person_catalogue(
         cluster_selection_epsilon: float = 0.2,
         use_median: bool = True,
         print_distances: bool = False,
+        use_sparse_neighbors: bool = True,
+        sparse_if_n_ge: int = 1000,
 ):
     """
       1) Group detections by (clip_id, track_id) => tracklets
       2) Compute one representative embedding per tracklet
-      3) Build cosine distance matrix
-      4) Apply cannot-links:
-         - ALL pairs from the same clip (enforces cross-clip-only clustering)
-      5) Cluster tracklets with custom greedy algorithm that ALSO
+      3) Build candidate graph (dense or sparse radius-neighbor)
+      4) Cluster tracklets with custom greedy algorithm that
          enforces cross-clip constraint during merges
-      6) Assign IDs and build catalogue (and save to JSON)
+      5) Assign IDs and build catalogue (and save to JSON)
     Prints progress and summary information.
     Returns the catalogue.
     """
@@ -337,25 +395,24 @@ def generate_person_catalogue(
         print("No tracklet info produced.")
         return {}
 
-    # Build distance matrix
-    dist_matrix = build_distance_matrix(tracklet_info, print_distances=print_distances)
-
-    # Cannot-links from SAME CLIP to enforce cross-clip-only clustering
-    same_clip_pairs = build_same_clip_cannot_links(tracklet_info)
-    if same_clip_pairs:
-        print(f"Cannot-links from same-clip constraint: {len(same_clip_pairs)} pairs")
-        apply_cannot_links_to_distance_matrix(dist_matrix, same_clip_pairs, max_distance=2.0)
-
-    if print_distances:
-        print(f'dist_matrix after constraints: {dist_matrix}')
-
-    # Cluster (with cross-clip enforcement inside the algorithm too)
-    labels = cluster_tracklets(
-        dist_matrix,
-        tracklet_info,
-        min_cluster_size=min_cluster_size,
-        cluster_selection_epsilon=cluster_selection_epsilon,
-    )
+    n_tracklets = len(tracklet_info)
+    use_sparse_path = use_sparse_neighbors and n_tracklets >= sparse_if_n_ge and not print_distances
+    if use_sparse_path:
+        labels = cluster_tracklets_sparse(
+            tracklet_info,
+            min_cluster_size=min_cluster_size,
+            cluster_selection_epsilon=cluster_selection_epsilon,
+        )
+    else:
+        dist_matrix = build_distance_matrix(tracklet_info, print_distances=print_distances)
+        if print_distances:
+            print(f"dist_matrix: {dist_matrix}")
+        labels = cluster_tracklets(
+            dist_matrix,
+            tracklet_info,
+            min_cluster_size=min_cluster_size,
+            cluster_selection_epsilon=cluster_selection_epsilon,
+        )
 
     # Assign person IDs and build catalogue
     assign_person_ids(tracklet_info, labels)
@@ -370,6 +427,9 @@ def generate_person_catalogue(
             "cluster_selection_epsilon": cluster_selection_epsilon,
             "use_median": use_median,
             "cross_clip_only": True,
+            "sparse_neighbors_enabled": use_sparse_neighbors,
+            "sparse_if_n_ge": sparse_if_n_ge,
+            "sparse_path_used": use_sparse_path,
         },
     }
     output = {"summary": summary, "catalogue": catalogue}
