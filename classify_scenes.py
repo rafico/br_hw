@@ -2,6 +2,7 @@ import os
 import json
 import cv2
 import torch
+import numpy as np
 import fiftyone as fo
 from typing import Any, List, Tuple, Set, Dict
 from tqdm import tqdm
@@ -88,20 +89,23 @@ def classify_clip_action(
 
     try:
         while True:
-            frames = []
+            frames_bgr = []
             for _ in range(num_frames):
                 ret, frame = cap.read()
                 if not ret:
                     break
-                # Convert BGR -> RGB for the processor
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                frames_bgr.append(frame)
                 frame_idx += 1
 
-            if not frames:
+            if not frames_bgr:
                 break
 
-            collected = len(frames)
+            collected = len(frames_bgr)
             start = frame_idx - collected
+
+            # Convert this segment in one array operation (BGR -> RGB).
+            frames_np = np.ascontiguousarray(np.stack(frames_bgr, axis=0)[..., ::-1])
+            frames = [frm for frm in frames_np]
 
             # Pad last frame if we ran out near EOF
             while len(frames) < num_frames:
