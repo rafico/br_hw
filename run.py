@@ -1,4 +1,7 @@
 import argparse
+import json
+import time
+from typing import List
 
 import cv2
 import fiftyone as fo
@@ -138,8 +141,82 @@ def convert_to_fiftyone_detections(tracks, features, person_label, width, height
     return frame_detections
 
 
+def _extract_person_detections(result, person_class_id):
+    """Build detector output arrays (Nx6 detections, Nx4 boxes) for a single frame."""
+    if result.boxes is None or len(result.boxes) == 0:
+        return np.empty((0, 6), dtype=np.float32), np.empty((0, 4), dtype=np.float32)
+
+    boxes = result.boxes.xyxy.cpu().numpy().astype(np.float32, copy=False)
+    confs = result.boxes.conf.cpu().numpy().astype(np.float32, copy=False)
+    labels = result.boxes.cls.cpu().numpy().astype(np.int32, copy=False)
+
+    if person_class_id is not None:
+        person_mask = labels == person_class_id
+        boxes = boxes[person_mask]
+        confs = confs[person_mask]
+        labels = labels[person_mask]
+
+    if len(boxes) == 0:
+        return np.empty((0, 6), dtype=np.float32), np.empty((0, 4), dtype=np.float32)
+
+    detections = np.column_stack((boxes, confs, labels.astype(np.float32, copy=False)))
+    return detections, boxes
+
+
+def _process_frame_batch(
+        *,
+        frames: List[np.ndarray],
+        frame_numbers: List[int],
+        model,
+        person_class_id,
+        person_label,
+        reid_extractor,
+        tracker,
+        sample,
+        width: int,
+        height: int,
+        show_visuals: bool,
+) -> bool:
+    """
+    Process a batch of frames:
+    - Batched YOLO inference for GPU efficiency
+    - Sequential tracker updates to preserve tracker state semantics
+    Returns True when user requests quit via visualization window.
+    """
+    results = model(frames, conf=0.1, verbose=False)
+
+    for frame, frame_number, result in zip(frames, frame_numbers, results):
+        detections, boxes = _extract_person_detections(result, person_class_id)
+
+        if len(boxes) > 0:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            detections, features = extract_reid_features(
+                reid_extractor, rgb, boxes, detections
+            )
+        else:
+            features = None
+
+        tracks = tracker.update(detections, frame, features)
+
+        if show_visuals:
+            tracker.plot_results(frame, show_trajectories=True)
+            cv2.imshow("BoXMOT + Ultralytics", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                return True
+
+        frame_detections = convert_to_fiftyone_detections(
+            tracks, features, person_label, width, height
+        )
+        sample.frames[frame_number]["detections"] = fo.Detections(
+            detections=frame_detections
+        )
+
+    return False
+
+
 def process_single_video(sample, model, person_class_id, person_label,
-                         reid_extractor, tracker, show_visuals):
+                         reid_extractor, tracker, show_visuals,
+                         det_batch_size: int = 8):
     """Process a single video file and add detections to the sample."""
     cap = cv2.VideoCapture(sample.filepath)
 
@@ -153,49 +230,61 @@ def process_single_video(sample, model, person_class_id, person_label,
 
     sample.frames.clear()
     frame_number = 0
+    frame_buffer: List[np.ndarray] = []
+    frame_numbers: List[int] = []
+    det_batch_size = max(1, int(det_batch_size))
+    stop_requested = False
 
     with torch.inference_mode():
         while True:
             success, frame = cap.read()
             if not success:
+                if frame_buffer:
+                    stop_requested = _process_frame_batch(
+                        frames=frame_buffer,
+                        frame_numbers=frame_numbers,
+                        model=model,
+                        person_class_id=person_class_id,
+                        person_label=person_label,
+                        reid_extractor=reid_extractor,
+                        tracker=tracker,
+                        sample=sample,
+                        width=width,
+                        height=height,
+                        show_visuals=show_visuals,
+                    )
                 break
 
             frame_number += 1
+            frame_buffer.append(frame)
+            frame_numbers.append(frame_number)
 
-            # Run detection
-            rgb, detections, boxes = run_detection(model, frame, person_class_id)
-
-            # Extract ReID features
-            detections, features = extract_reid_features(
-                reid_extractor, rgb, boxes, detections
-            )
-
-            # Update tracker
-            tracks = tracker.update(detections, frame, features)
-
-            # Visualize if requested
-            if show_visuals:
-                tracker.plot_results(frame, show_trajectories=True)
-                cv2.imshow("BoXMOT + Ultralytics", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+            if len(frame_buffer) >= det_batch_size:
+                stop_requested = _process_frame_batch(
+                    frames=frame_buffer,
+                    frame_numbers=frame_numbers,
+                    model=model,
+                    person_class_id=person_class_id,
+                    person_label=person_label,
+                    reid_extractor=reid_extractor,
+                    tracker=tracker,
+                    sample=sample,
+                    width=width,
+                    height=height,
+                    show_visuals=show_visuals,
+                )
+                frame_buffer = []
+                frame_numbers = []
+                if stop_requested:
                     break
-
-            # Convert to FiftyOne format
-            frame_detections = convert_to_fiftyone_detections(
-                tracks, features, person_label, width, height
-            )
-
-            sample.frames[frame_number]["detections"] = fo.Detections(
-                detections=frame_detections
-            )
 
     cap.release()
     sample.save()
     print(f"Processed and saved detections for {sample.filepath}")
-    return True
+    return not stop_requested
 
 
-def process_video_file(dataset, show_visuals: bool = False):
+def process_video_file(dataset, show_visuals: bool = False, det_batch_size: int = 8):
     """Process all videos in the dataset."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -210,10 +299,10 @@ def process_video_file(dataset, show_visuals: bool = False):
         tracker = load_tracker()
         success = process_single_video(
             sample, model, person_class_id, person_label,
-            reid_extractor, tracker, show_visuals
+            reid_extractor, tracker, show_visuals,
+            det_batch_size=det_batch_size,
         )
-
-        if show_visuals and cv2.waitKey(1) & 0xFF == ord("q"):
+        if not success:
             break
 
     if show_visuals:
