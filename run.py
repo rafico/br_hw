@@ -374,6 +374,29 @@ def launch_app(frame_view):
     session.wait()
 
 
+def time_stage(timings: dict, stage_name: str, fn):
+    t0 = time.perf_counter()
+    result = fn()
+    timings[stage_name] = time.perf_counter() - t0
+    return result
+
+
+def write_timing_report(timings: dict, output_file: str = "timings.json"):
+    if not timings:
+        return
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(timings, f, indent=2)
+
+    total = sum(timings.values())
+    print("\n=== Pipeline Timings ===")
+    for stage, elapsed in sorted(timings.items(), key=lambda x: x[1], reverse=True):
+        pct = (100.0 * elapsed / total) if total else 0.0
+        print(f"{stage:22s}: {elapsed:8.2f}s ({pct:5.1f}%)")
+    print(f"{'total':22s}: {total:8.2f}s")
+    print(f"Timing report saved to: {output_file}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Create a FiftyOne dataset from a video directory.")
     parser.add_argument("--fo-dataset-name", default="re_id", help="Name of the dataset")
@@ -385,20 +408,36 @@ def parse_args():
     parser.add_argument('--visual-debug-dir', default='debug_visual', help='Directory to save debug images')
     parser.add_argument('--sim-key', default='embd_sim', help='Brain key for similarity index')
     parser.add_argument('--viz-key', default='embd_viz', help='Brain key for visualization')
+    parser.add_argument('--det-batch-size', type=int, default=8, help='Batch size for YOLO frame inference')
+    parser.add_argument('--disable-sparse-clustering', action='store_true', help='Disable sparse neighbor clustering path')
+    parser.add_argument('--sparse-threshold', type=int, default=1000, help='Tracklet count threshold to enable sparse clustering')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    timings = {}
 
-    dataset, new_dataset = load_video_files(
-        fo_dataset_name=args.fo_dataset_name,
-        dataset_dir=args.dataset_dir,
-        overwrite=args.overwrite_loading
+    dataset, new_dataset = time_stage(
+        timings,
+        "load_dataset",
+        lambda: load_video_files(
+            fo_dataset_name=args.fo_dataset_name,
+            dataset_dir=args.dataset_dir,
+            overwrite=args.overwrite_loading
+        ),
     )
 
     if new_dataset or args.overwrite_algo:
-        process_video_file(dataset, show_visuals=args.show)
+        time_stage(
+            timings,
+            "video_processing",
+            lambda: process_video_file(
+                dataset,
+                show_visuals=args.show,
+                det_batch_size=args.det_batch_size,
+            ),
+        )
 
     # # Configure visualization
     # configure_dataset_visualization(dataset)
@@ -408,7 +447,11 @@ def main():
     # session.wait()
 
     # Assume `dataset` is your processed FiftyOne video dataset
-    frame_view = get_frame_view(dataset)
+    frame_view = time_stage(
+        timings,
+        "build_frame_view",
+        lambda: get_frame_view(dataset),
+    )
 
     sim_key = args.sim_key
     viz_key = args.viz_key
@@ -419,28 +462,51 @@ def main():
         dataset.delete_brain_run(sim_key)
 
     if sim_key not in brain_runs or args.overwrite_algo:
-        sim_index = compute_similarity(frame_view, sim_key)
+        time_stage(
+            timings,
+            "similarity",
+            lambda: compute_similarity(frame_view, sim_key),
+        )
 
     if viz_key in brain_runs and args.overwrite_algo:
         dataset.delete_brain_run(viz_key)
 
     if viz_key not in brain_runs or args.overwrite_algo:
-        compute_visualization(frame_view, sim_key, viz_key)
+        time_stage(
+            timings,
+            "visualization",
+            lambda: compute_visualization(frame_view, sim_key, viz_key),
+        )
 
     # Build / load cached detections
-    all_detections = compute_or_load_all_detections(
-        frame_view=frame_view,
-        dataset=dataset,
-        dataset_dir=args.dataset_dir,
-        overwrite_algo=args.overwrite_algo,
+    all_detections = time_stage(
+        timings,
+        "detection_cache",
+        lambda: compute_or_load_all_detections(
+            frame_view=frame_view,
+            dataset=dataset,
+            dataset_dir=args.dataset_dir,
+            overwrite_algo=args.overwrite_algo,
+        ),
     )
 
-    generate_person_catalogue(
+    time_stage(
+        timings,
+        "clustering",
+        lambda: generate_person_catalogue(
             all_detections,
             output_file="catalogue_simple.json",
+            use_sparse_neighbors=not args.disable_sparse_clustering,
+            sparse_if_n_ge=args.sparse_threshold,
+        ),
     )
 
-    classify_scenes(dataset, all_detections)
+    time_stage(
+        timings,
+        "scene_classification",
+        lambda: classify_scenes(dataset, all_detections),
+    )
+    write_timing_report(timings)
 
 #    launch_app(frame_view)
 
