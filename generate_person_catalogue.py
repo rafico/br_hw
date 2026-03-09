@@ -69,47 +69,85 @@ def build_tracklets(all_detections: List[Dict[str, Any]]) -> Dict[Tuple[str, int
 
 
 def compute_tracklet_info(tracklets: Dict[Tuple[str, int], List[Dict[str, Any]]],
-                          use_median: bool = False) -> List[Dict[str, Any]]:
-    """Compute representative embeddings and frame ranges for each tracklet."""
+                          use_median: bool = False,
+                          min_tracklet_frames: int = 0) -> List[Dict[str, Any]]:
+    """Compute representative embeddings and frame ranges for each tracklet.
+
+    Also stores all per-detection embeddings for min-linkage distance computation.
+    Tracklets with fewer than min_tracklet_frames are dropped.
+    """
     tracklet_info = []
+    dropped = 0
     for (clip_id, track_id), dets in sorted(tracklets.items(), key=lambda x: (x[0][0], x[0][1])):
         embeds = np.array([det["embeddings"] for det in dets], dtype=np.float32)
+        if len(embeds) < min_tracklet_frames:
+            dropped += 1
+            continue
         rep = compute_tracklet_representative(embeds, use_median=use_median)
+        all_embeds = _normalize_rows(embeds)
         frames = sorted([int(det["frame_num"]) for det in dets])
         tracklet_info.append(
             {
                 "clip_id": clip_id,
                 "track_id": track_id,
                 "embedding": rep,
+                "all_embeddings": all_embeds,
                 "frame_ranges": _frame_ranges(frames),
                 "num_frames": len(frames),
             }
         )
+    if dropped:
+        print(f"Dropped {dropped} tracklets with < {min_tracklet_frames} frames")
     return tracklet_info
 
 
 def build_distance_matrix(tracklet_info: List[Dict[str, Any]],
-                          print_distances: bool = False
+                          print_distances: bool = False,
+                          linkage: str = "min",
                           ) -> np.ndarray:
     """
-    Build cosine distance matrix from tracklet embeddings.
+    Build cosine distance matrix between tracklets.
+
+    linkage controls how multi-detection tracklets are compared:
+      - "min": minimum pairwise distance (single-linkage, best for re-ID)
+      - "mean": mean of all pairwise distances
+      - "representative": original approach using single representative embedding
+
     Prints tracklet order and pairwise distances for debugging.
     """
+    n = len(tracklet_info)
     if print_distances:
         print("Tracklet order:")
         for i, t in enumerate(tracklet_info):
-            print(f"  {i}: {t['clip_id']}_{t['track_id']}")
+            print(f"  {i}: {t['clip_id']}_{t['track_id']} ({t['num_frames']} frames)")
 
-    X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
-    X = normalize(X)
+    if linkage == "representative":
+        X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
+        X = normalize(X)
+        dist_matrix = pairwise_distances(X, metric="cosine")
+    else:
+        dist_matrix = np.zeros((n, n), dtype=np.float32)
+        for i in range(n):
+            for j in range(i + 1, n):
+                # Compute all pairwise cosine distances between detections
+                D = pairwise_distances(
+                    tracklet_info[i]["all_embeddings"],
+                    tracklet_info[j]["all_embeddings"],
+                    metric="cosine",
+                )
+                if linkage == "min":
+                    d = float(D.min())
+                else:  # mean
+                    d = float(D.mean())
+                dist_matrix[i, j] = d
+                dist_matrix[j, i] = d
 
-    dist_matrix = pairwise_distances(X, metric="cosine")
     np.fill_diagonal(dist_matrix, 0.0)
     dist_matrix = np.clip(dist_matrix, 0.0, 2.0)
     dist_matrix = np.ascontiguousarray(dist_matrix, dtype=np.float32)
 
     if print_distances:
-        print("Pairwise cosine distances between tracklet representatives:")
+        print("Pairwise cosine distances between tracklets:")
         print(dist_matrix)
 
     _check_distance_matrix(dist_matrix)
@@ -371,6 +409,8 @@ def generate_person_catalogue(
         print_distances: bool = False,
         use_sparse_neighbors: bool = True,
         sparse_if_n_ge: int = 1000,
+        linkage: str = "min",
+        min_tracklet_frames: int = 3,
 ):
     """
       1) Group detections by (clip_id, track_id) => tracklets
@@ -390,7 +430,8 @@ def generate_person_catalogue(
     tracklets = build_tracklets(all_detections)
     print(f"Found {len(tracklets)} tracklets")
 
-    tracklet_info = compute_tracklet_info(tracklets, use_median=use_median)
+    tracklet_info = compute_tracklet_info(tracklets, use_median=use_median,
+                                          min_tracklet_frames=min_tracklet_frames)
     if not tracklet_info:
         print("No tracklet info produced.")
         return {}
@@ -427,6 +468,8 @@ def generate_person_catalogue(
             "cluster_selection_epsilon": cluster_selection_epsilon,
             "use_median": use_median,
             "cross_clip_only": True,
+            "linkage": linkage,
+            "min_tracklet_frames": min_tracklet_frames,
             "sparse_neighbors_enabled": use_sparse_neighbors,
             "sparse_if_n_ge": sparse_if_n_ge,
             "sparse_path_used": use_sparse_path,
