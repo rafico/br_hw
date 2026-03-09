@@ -49,6 +49,10 @@ pip install -r requirements.txt
 Process videos in a directory:
 
 ```bash
+# Activate virtual environment
+source br_env/bin/activate  # or: source venv/bin/activate
+
+# Run the pipeline (generates both person catalogue and scene labels)
 python run.py --dataset-dir /path/to/videos
 ```
 
@@ -58,9 +62,28 @@ python run.py --dataset-dir /path/to/videos
 # Show live visualization during processing
 python run.py --dataset-dir ./videos --show
 
-# Force reprocessing
+# Force reprocessing (recommended for first run)
 python run.py --dataset-dir ./videos --overwrite-loading --overwrite-algo
+
+# Increase batch size for faster processing (if GPU memory allows)
+python run.py --dataset-dir ./videos --det-batch-size 16
 ```
+
+### Quick Start (for this assignment)
+
+```bash
+# Setup environment
+python -m venv br_env
+source br_env/bin/activate
+pip install -r requirements.txt
+
+# Run on the provided videos
+python run.py --dataset-dir /path/to/videos --overwrite-loading --overwrite-algo
+```
+
+This will generate two key output files:
+- `catalogue_simple.json` - Person identity catalogue (Part A)
+- `scene_labels.json` - Scene classification with justifications (Part B)
 
 ### Command-Line Arguments
 
