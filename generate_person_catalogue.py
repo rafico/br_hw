@@ -172,9 +172,12 @@ def build_dense_candidate_pairs(
 def build_sparse_candidate_pairs(
         tracklet_info: List[Dict[str, Any]],
         cluster_selection_epsilon: float,
+        linkage: str = "min",
 ) -> Tuple[List[Tuple[float, int, int]], int, float]:
     """
     Build candidate pairs via radius neighbors to avoid dense O(n^2) pair materialization.
+    Uses representative embeddings for the initial radius search, then refines
+    with min-linkage distance for candidate pairs when linkage != "representative".
     Returns sorted (dist, i, j) pairs, number of possible pairs, and threshold used.
     """
     n = len(tracklet_info)
@@ -183,10 +186,13 @@ def build_sparse_candidate_pairs(
 
     X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
     X = normalize(X)
+    # Use a wider radius for initial candidate search when using min-linkage,
+    # since min-linkage distances are typically smaller than representative distances
+    search_radius = cluster_selection_epsilon * 1.5 if linkage != "representative" else cluster_selection_epsilon * 1.1
     threshold = cluster_selection_epsilon * 1.1
     total_possible = (n * (n - 1)) // 2
 
-    nn = NearestNeighbors(metric="cosine", algorithm="brute", radius=threshold)
+    nn = NearestNeighbors(metric="cosine", algorithm="brute", radius=search_radius)
     nn.fit(X)
     distances, neighbors = nn.radius_neighbors(X, return_distance=True)
 
@@ -196,7 +202,18 @@ def build_sparse_candidate_pairs(
             dst_i = int(dst)
             if dst_i <= src:
                 continue
-            pairs.append((float(dist), int(src), dst_i))
+            if linkage != "representative":
+                D = pairwise_distances(
+                    tracklet_info[src]["all_embeddings"],
+                    tracklet_info[dst_i]["all_embeddings"],
+                    metric="cosine",
+                )
+                if linkage == "min":
+                    dist = float(D.min())
+                else:
+                    dist = float(D.mean())
+            if dist <= threshold:
+                pairs.append((dist, int(src), dst_i))
 
     pairs.sort()
     return pairs, total_possible, threshold
@@ -335,13 +352,15 @@ def cluster_tracklets_sparse(
         tracklet_info: List[Dict[str, Any]],
         min_cluster_size: int = 2,
         cluster_selection_epsilon: float = 0.025,
+        linkage: str = "min",
 ) -> np.ndarray:
     """Sparse radius-neighbor variant for large tracklet counts."""
     print(
-        f"Using sparse radius-neighbor clustering, epsilon={cluster_selection_epsilon} (cross-clip only)"
+        f"Using sparse radius-neighbor clustering, epsilon={cluster_selection_epsilon}, "
+        f"linkage={linkage} (cross-clip only)"
     )
     sorted_pairs, total_pairs, threshold = build_sparse_candidate_pairs(
-        tracklet_info, cluster_selection_epsilon
+        tracklet_info, cluster_selection_epsilon, linkage=linkage
     )
     print(
         f"Sparse candidate graph: kept {len(sorted_pairs):,}/{total_pairs:,} "
@@ -443,9 +462,11 @@ def generate_person_catalogue(
             tracklet_info,
             min_cluster_size=min_cluster_size,
             cluster_selection_epsilon=cluster_selection_epsilon,
+            linkage=linkage,
         )
     else:
-        dist_matrix = build_distance_matrix(tracklet_info, print_distances=print_distances)
+        dist_matrix = build_distance_matrix(tracklet_info, print_distances=print_distances,
+                                            linkage=linkage)
         if print_distances:
             print(f"dist_matrix: {dist_matrix}")
         labels = cluster_tracklets(
