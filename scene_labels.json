@@ -23,7 +23,7 @@
   {
     "clip_id": "4",
     "label": "crime",
-    "justification": "sword fighting detected at 7.5s-8.0s (frames 225-240) involving person 23, person 24; high kick detected at 8.6s-9.1s (frames 257-272) involving person 23, person 24",
+    "justification": "sword fighting detected at 7.5s-8.0s (frames 225-240) involving person 1, person 3; high kick detected at 8.6s-9.1s (frames 257-272) involving person 1, person 3",
     "max_confidence": 0.0563,
     "crime_segments": [
       {
@@ -54,8 +54,8 @@
           40
         ],
         "involved_people_global": [
-          23,
-          24
+          1,
+          3
         ],
         "timestamp_start": 7.51,
         "timestamp_end": 8.01
@@ -88,8 +88,8 @@
           40
         ],
         "involved_people_global": [
-          23,
-          24
+          1,
+          3
         ],
         "timestamp_start": 8.58,
         "timestamp_end": 9.08

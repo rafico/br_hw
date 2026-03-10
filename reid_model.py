@@ -8,6 +8,7 @@ class DetectionReIDExtractor:
 
     Args:
         model_name: torchreid model name (e.g. "osnet_ain_x1_0")
+        model_path: optional path to fine-tuned checkpoint
         image_size: (H, W) for the ReID model
         device: "cuda" or "cpu"
         batch_size: how many crops to process at once
@@ -16,6 +17,7 @@ class DetectionReIDExtractor:
     def __init__(
         self,
         model_name: str = "osnet_ain_x1_0",
+        model_path: str = "",
         image_size: Tuple[int, int] = (256, 128),
         device: str = "cuda",
         batch_size: int = 32,
@@ -23,6 +25,7 @@ class DetectionReIDExtractor:
     ):
         self.extractor = FeatureExtractor(
             model_name=model_name,
+            model_path=model_path,
             image_size=image_size,
             device=device,
         )
@@ -85,4 +88,3 @@ class DetectionReIDExtractor:
 
         feats_all = np.concatenate(feats_list, axis=0) if feats_list else np.empty((0, 0), dtype=np.float32)
         return feats_all, keep_idx
-

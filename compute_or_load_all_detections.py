@@ -17,7 +17,7 @@ def _cache_key_for_dataset(dataset) -> str:
         "name": dataset.name,
         "media_type": getattr(dataset, "media_type", None),
         "num_samples": len(dataset),
-        "version": "v1",  # bump if you change the structure
+        "version": "v2",  # bump if you change the structure
     }
     j = json.dumps(meta, sort_keys=True)
     return hashlib.md5(j.encode("utf-8")).hexdigest()
@@ -43,6 +43,16 @@ def save_all_detections(path: Path, all_detections: List[Dict[str, Any]]) -> Non
 def load_all_detections(path: Path) -> List[Dict[str, Any]]:
     return json.loads(path.read_text())
 
+
+def _safe_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def compute_all_detections(frame_view, dataset) -> List[Dict[str, Any]]:
     all_detections: List[Dict[str, Any]] = []
     clip_by_id: Dict[Any, str] = {}
@@ -54,16 +64,48 @@ def compute_all_detections(frame_view, dataset) -> List[Dict[str, Any]]:
 
         clip_id = clip_by_id[sample_id]
         detections = getattr(fs.detections, "detections", [])
-        all_detections.extend(
-            {
-                "clip_id": clip_id,
-                "frame_num": fs.frame_number,
-                "track_id": det.index,
-                "embeddings": det.embeddings,  # converted on save
-            }
-            for det in detections
-            if det.embeddings is not None
-        )
+        for det in detections:
+            if det.embeddings is None:
+                continue
+
+            bbox = getattr(det, "bounding_box", None)
+            center_x = None
+            center_y = None
+            bbox_w = None
+            bbox_h = None
+            if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                x, y, w, h = bbox
+                x_f = _safe_float(x)
+                y_f = _safe_float(y)
+                w_f = _safe_float(w)
+                h_f = _safe_float(h)
+                bbox_w = w_f
+                bbox_h = h_f
+                if x_f is not None and w_f is not None:
+                    center_x = x_f + (0.5 * w_f)
+                if y_f is not None and h_f is not None:
+                    center_y = y_f + (0.5 * h_f)
+
+            det_conf = getattr(det, "det_confidence", None)
+            if det_conf is None:
+                det_conf = getattr(det, "confidence", None)
+
+            all_detections.append(
+                {
+                    "clip_id": clip_id,
+                    "frame_num": int(fs.frame_number),
+                    "track_id": int(det.index),
+                    "embeddings": det.embeddings,  # converted on save
+                    "confidence": _safe_float(det_conf),
+                    "quality": _safe_float(getattr(det, "quality", None)),
+                    "sharpness": _safe_float(getattr(det, "sharpness", None)),
+                    "timestamp_sec": _safe_float(getattr(det, "timestamp_sec", None)),
+                    "center_x": center_x,
+                    "center_y": center_y,
+                    "bbox_w": bbox_w,
+                    "bbox_h": bbox_h,
+                }
+            )
 
     return all_detections
 

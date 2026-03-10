@@ -1,0 +1,46 @@
+/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/torchreid/reid/metrics/rank.py:11: UserWarning: Cython evaluation (very fast so highly recommended) is unavailable, now use python evaluation.
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/rafi/code/br_hw/run.py", line 525, in <module>
+    main()
+  File "/home/rafi/code/br_hw/run.py", line 431, in main
+    dataset, new_dataset = time_stage(
+                           ^^^^^^^^^^^
+  File "/home/rafi/code/br_hw/run.py", line 389, in time_stage
+    result = fn()
+             ^^^^
+  File "/home/rafi/code/br_hw/run.py", line 434, in <lambda>
+    lambda: load_video_files(
+            ^^^^^^^^^^^^^^^^^
+  File "/home/rafi/code/br_hw/run.py", line 328, in load_video_files
+    dataset = fo.load_dataset(fo_dataset_name)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/core/dataset.py", line 169, in load_dataset
+    return Dataset(name, _create=False, _reload=reload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/core/singletons.py", line 51, in __call__
+    instance = cls._make_instance(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/core/singletons.py", line 35, in _make_instance
+    instance.__init__(name=name, _create=_create, *args, **kwargs)
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/core/dataset.py", line 332, in __init__
+    doc, sample_doc_cls, frame_doc_cls = _load_dataset(
+                                         ^^^^^^^^^^^^^^
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/core/dataset.py", line 8985, in _load_dataset
+    fomi.migrate_dataset_if_necessary(name)
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/migrations/runner.py", line 245, in migrate_dataset_if_necessary
+    fou.handle_error(e, error_level=error_level)
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/core/utils.py", line 690, in handle_error
+    etau.handle_error(error, error_level, base_error=base_error)
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/eta/core/utils.py", line 984, in handle_error
+    raise error
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/migrations/runner.py", line 243, in migrate_dataset_if_necessary
+    _migrate_dataset_if_necessary(name, destination, verbose)
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/migrations/runner.py", line 289, in _migrate_dataset_if_necessary
+    runner = MigrationRunner(head, destination)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rafi/code/br_hw/br_env/lib/python3.12/site-packages/fiftyone/migrations/runner.py", line 323, in __init__
+    raise EnvironmentError(
+OSError: You must have fiftyone>=1.13.3 installed in order to migrate from v1.10.0 to v1.13.3, but you are currently running fiftyone==1.10.0.
+
+See https://docs.voxel51.com/getting_started/install.html#downgrading-fiftyone for information about downgrading FiftyOne.
