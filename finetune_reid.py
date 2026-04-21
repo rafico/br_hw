@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import CLIPImageProcessor, CLIPModel, get_cosine_schedule_with_warmup
 
 from generate_person_catalogue import tracklets_cooccur
+from utils_determinism import seed_everything
 
 LOGGER = logging.getLogger(__name__)
 
@@ -179,17 +180,31 @@ class TripletDataset(Dataset):
 
 
 def train(
-    detections_path: str,
+    detections_path: str = "",
+    detections: Optional[List[dict]] = None,
     catalogue_path: str = "catalogue_v2.json",
     output_weights: str = "checkpoints/clipreid_ft.pth",
     epochs: int = 5,
     batch_size: int = 64,
     margin: float = 0.3,
     learning_rate: float = 3.5e-5,
+    min_frames: int = 30,
+    min_probability: float = 0.9,
+    seed: int = 51,
 ) -> Optional[Path]:
+    seed_everything(seed)
     catalogue_payload = load_catalogue(catalogue_path)
-    detections = load_detections(detections_path)
-    triplets = build_triplets(catalogue_payload, detections)
+    if detections is None:
+        if not detections_path:
+            raise ValueError("Either detections_path or detections must be provided")
+        detections = load_detections(detections_path)
+
+    triplets = build_triplets(
+        catalogue_payload,
+        detections,
+        min_frames=min_frames,
+        min_probability=min_probability,
+    )
     if not triplets:
         LOGGER.warning("Fewer than 3 high-confidence clusters are available; skipping fine-tuning.")
         return None
@@ -236,6 +251,9 @@ def parse_args():
     parser.add_argument("--detections-cache", required=True, help="Path to cached all_detections JSON")
     parser.add_argument("--catalogue-path", default="catalogue_v2.json")
     parser.add_argument("--output-weights", default="checkpoints/clipreid_ft.pth")
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--min-frames", type=int, default=30)
+    parser.add_argument("--min-probability", type=float, default=0.9)
     return parser.parse_args()
 
 
@@ -246,6 +264,9 @@ def main():
         detections_path=args.detections_cache,
         catalogue_path=args.catalogue_path,
         output_weights=args.output_weights,
+        epochs=args.epochs,
+        min_frames=args.min_frames,
+        min_probability=args.min_probability,
     )
 
 

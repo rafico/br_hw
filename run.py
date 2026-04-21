@@ -2,6 +2,7 @@ import argparse
 import inspect
 import json
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -16,16 +17,31 @@ from ultralytics import YOLO
 
 from cluster_v2 import generate_person_catalogue_v2
 import evaluate as evaluate_module
+from compute_or_load_all_detections import (
+    compute_or_load_all_detections,
+    detections_cache_path,
+    save_all_detections,
+)
+from finetune_reid import train as finetune_reid_train
 from generate_person_catalogue import generate_person_catalogue
-from compute_or_load_all_detections import compute_or_load_all_detections
 from classify_scenes import classify_scenes
 from reid_ensemble import build_extractor
 from reid_model import torso_color_hist
 from utils_determinism import seed_everything
 from vlm_scene import classify_scenes_vlm
+from visualizers import export_to_rerun
 
 
-def load_detector(model_path: str = "yolo11m.pt"):
+def _yolo_inference_kwargs() -> dict:
+    return {
+        "conf": 0.05,
+        "verbose": False,
+        "imgsz": 640,
+        "half": bool(torch.cuda.is_available()),
+    }
+
+
+def load_detector(model_path: str = "yolo26m.pt"):
     """Return (ultralytics YOLO model, person_class_id)."""
     model = YOLO(model_path)
     person_class_id = next((k for k, v in model.names.items() if v == "person"), None)
@@ -82,6 +98,8 @@ def load_tracker(
         return ByteTrack(**tracker_common_args)
 
     tracker_device = torch.device(device)
+    if tracker_device.type == "cuda" and tracker_device.index is None:
+        tracker_device = torch.device("cuda:0")
     use_half = bool(tracker_half and tracker_device.type == "cuda")
     reid_weights = Path(tracker_reid_weights) if tracker_reid_weights else _default_tracker_reid_weights()
 
@@ -157,7 +175,7 @@ def run_detection(model, frame, person_class_id):
     return an RGB copy for downstream ReID feature extraction.
     """
     rgb_for_reid = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = model(frame, conf=0.05, verbose=False)
+    results = model(frame, **_yolo_inference_kwargs())
     result = results[0]
 
     if not result.boxes:
@@ -366,7 +384,7 @@ def _process_frame_batch(
     - Sequential tracker updates to preserve tracker state semantics
     Returns True when user requests quit via visualization window.
     """
-    results = model(frames, conf=0.05, verbose=False)
+    results = model(frames, **_yolo_inference_kwargs())
 
     for frame, frame_number, result in zip(frames, frame_numbers, results):
         detections, boxes = _extract_person_detections(result, person_class_id)
@@ -497,6 +515,7 @@ def process_video_file(
         dataset,
         show_visuals: bool = False,
         det_batch_size: int = 8,
+        yolo_weights: str = "yolo26m.pt",
         reid_model_name: str = "osnet_ain_x1_0",
         reid_backbone: Optional[str] = None,
         reid_model_path: str = "",
@@ -508,7 +527,7 @@ def process_video_file(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load components
-    model, person_class_id = load_detector("yolo11m.pt")
+    model, person_class_id = load_detector(yolo_weights)
     reid_extractor = load_reid_extractor(
         model_name=reid_backbone or reid_model_name,
         model_path=reid_model_path,
@@ -625,10 +644,105 @@ def write_timing_report(timings: dict, output_file: str = "timings.json"):
     print(f"Timing report saved to: {output_file}")
 
 
+def _normalize_rows(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.size == 0:
+        return arr
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    return arr / np.where(norms == 0, 1.0, norms)
+
+
+def _load_rgb_frame_for_reembedding(video_path: str, frame_num: int) -> Optional[np.ndarray]:
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, max(int(frame_num) - 1, 0))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        return None
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def _merge_clip_embedding(existing_embedding, clip_embedding: np.ndarray, reid_backbone: str) -> np.ndarray:
+    clip_embedding = _normalize_rows(np.asarray(clip_embedding, dtype=np.float32)[None, :])[0]
+    normalized_backbone = str(reid_backbone).lower()
+    if normalized_backbone == "clipreid":
+        return clip_embedding.astype(np.float32, copy=False)
+
+    if normalized_backbone != "ensemble":
+        raise ValueError(
+            f"Fine-tune re-embedding only supports clipreid or ensemble backbones, got {reid_backbone!r}"
+        )
+
+    existing = np.asarray(existing_embedding, dtype=np.float32).reshape(-1)
+    if existing.size <= clip_embedding.size:
+        return clip_embedding.astype(np.float32, copy=False)
+
+    osnet_part = existing[:-clip_embedding.size]
+    osnet_part = _normalize_rows(osnet_part[None, :])[0]
+    merged = np.concatenate([osnet_part, clip_embedding], axis=0)
+    return _normalize_rows(merged[None, :])[0]
+
+
+def reembed_detections_with_finetuned_clip(
+        all_detections,
+        *,
+        reid_backbone: str,
+        clip_weights_path: str,
+        device: Optional[str] = None,
+):
+    if not all_detections:
+        return []
+
+    if str(reid_backbone).lower() not in {"clipreid", "ensemble"}:
+        raise ValueError("--finetune-reid requires --reid-backbone clipreid or ensemble")
+
+    clip_extractor = load_reid_extractor(
+        model_name="clipreid",
+        model_path=clip_weights_path,
+        device=device,
+    )
+
+    updated = [dict(det) for det in all_detections]
+    grouped_indices = defaultdict(list)
+    for idx, det in enumerate(all_detections):
+        grouped_indices[(det["video_path"], str(det["clip_id"]), int(det["frame_num"]))].append(idx)
+
+    with torch.inference_mode():
+        for (video_path, _clip_id, frame_num), indices in sorted(grouped_indices.items()):
+            frame_rgb = _load_rgb_frame_for_reembedding(video_path, frame_num)
+            if frame_rgb is None:
+                continue
+
+            boxes = np.asarray([all_detections[idx]["box_xyxy_abs"] for idx in indices], dtype=np.float32)
+            features, keep_idx = clip_extractor.extract_from_detections(frame_rgb, boxes)
+            feature_map = {
+                int(det_offset): np.asarray(features[row], dtype=np.float32)
+                for row, det_offset in enumerate(np.asarray(keep_idx, dtype=np.int64))
+            }
+
+            for det_offset, det_idx in enumerate(indices):
+                clip_feature = feature_map.get(int(det_offset))
+                if clip_feature is None:
+                    continue
+                updated[det_idx]["embeddings"] = _merge_clip_embedding(
+                    all_detections[det_idx]["embeddings"],
+                    clip_feature,
+                    reid_backbone=reid_backbone,
+                )
+
+    return updated
+
+
+def _read_json(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Create a FiftyOne dataset from a video directory.")
     parser.add_argument("--fo-dataset-name", default="re_id", help="Name of the dataset")
     parser.add_argument("--dataset-dir", required=True, help="Path to the videos directory")
+    parser.add_argument("--yolo-weights", default="yolo26m.pt", help="Detector weights to load via Ultralytics")
     parser.add_argument("--show", action="store_true", help="Show live video visualization during processing")
     parser.add_argument('--overwrite-loading', action='store_true', help='reload fo dataset')
     parser.add_argument('--overwrite-algo', action='store_true', help='recompute embedding')
@@ -678,6 +792,20 @@ def parse_args():
     parser.add_argument('--legacy-clustering', dest='use_new_clustering', action='store_false', help='Use the legacy catalogue_simple clustering pipeline')
     parser.add_argument('--pose-filter', action='store_true', help='Enable MediaPipe pose filtering for V2 keyframe selection')
     parser.add_argument('--scene-backend', default='gemini', choices=['gemini', 'videomae', 'internvideo'], help='Scene classification backend')
+    parser.add_argument(
+        '--visualizer',
+        default='fiftyone',
+        choices=['none', 'fiftyone', 'rerun', 'both'],
+        help='Post-run visualization backend',
+    )
+    parser.add_argument('--rerun-spawn', action='store_true', help='Spawn a Rerun viewer after export')
+    parser.add_argument('--rerun-save', default='', help='Optional path to save a Rerun .rrd recording')
+    parser.add_argument('--rerun-sample-every', type=int, default=1, help='Sample every Nth frame when exporting frames to Rerun')
+    parser.add_argument('--rerun-max-frames-per-clip', type=int, default=None, help='Optional cap on exported frame images per clip')
+    parser.add_argument('--finetune-reid', action='store_true', help='Run a self-bootstrap CLIP fine-tune pass before the final clustering pass')
+    parser.add_argument('--finetune-min-frames', type=int, default=30, help='Minimum total frames across appearances for pseudo-label fine-tuning')
+    parser.add_argument('--finetune-min-prob', type=float, default=0.9, help='Minimum cluster_probability gate for pseudo-label fine-tuning')
+    parser.add_argument('--finetune-epochs', type=int, default=5, help='Epoch count for pseudo-label CLIP fine-tuning')
     parser.add_argument('--evaluate', action='store_true', help='Run evaluation against ground_truth.json if available')
     return parser.parse_args()
 
@@ -703,6 +831,11 @@ def main():
     args = parse_args()
     timings = {}
 
+    if args.finetune_reid and not args.use_new_clustering:
+        raise ValueError("--finetune-reid requires the stage-2 clustering path")
+    if args.finetune_reid and args.reid_backbone not in {"clipreid", "ensemble"}:
+        raise ValueError("--finetune-reid requires --reid-backbone clipreid or ensemble")
+
     dataset, new_dataset = time_stage(
         timings,
         "load_dataset",
@@ -721,6 +854,7 @@ def main():
                 dataset,
                 show_visuals=args.show,
                 det_batch_size=args.det_batch_size,
+                yolo_weights=args.yolo_weights,
                 reid_model_name=args.reid_model_name,
                 reid_backbone=args.reid_backbone,
                 reid_model_path=args.reid_weights or args.reid_model_path,
@@ -744,30 +878,30 @@ def main():
         lambda: get_frame_view(dataset),
     )
 
-    sim_key = args.sim_key
-    viz_key = args.viz_key
+    if args.visualizer in {"fiftyone", "both"}:
+        sim_key = args.sim_key
+        viz_key = args.viz_key
+        brain_runs = dataset.list_brain_runs()
 
-    brain_runs = dataset.list_brain_runs()
+        if sim_key in brain_runs and args.overwrite_algo:
+            dataset.delete_brain_run(sim_key)
 
-    if sim_key in brain_runs and args.overwrite_algo:
-        dataset.delete_brain_run(sim_key)
+        if sim_key not in brain_runs or args.overwrite_algo:
+            time_stage(
+                timings,
+                "similarity",
+                lambda: compute_similarity(frame_view, sim_key),
+            )
 
-    if sim_key not in brain_runs or args.overwrite_algo:
-        time_stage(
-            timings,
-            "similarity",
-            lambda: compute_similarity(frame_view, sim_key),
-        )
+        if viz_key in brain_runs and args.overwrite_algo:
+            dataset.delete_brain_run(viz_key)
 
-    if viz_key in brain_runs and args.overwrite_algo:
-        dataset.delete_brain_run(viz_key)
-
-    if viz_key not in brain_runs or args.overwrite_algo:
-        time_stage(
-            timings,
-            "visualization",
-            lambda: compute_visualization(frame_view, sim_key, viz_key),
-        )
+        if viz_key not in brain_runs or args.overwrite_algo:
+            time_stage(
+                timings,
+                "visualization",
+                lambda: compute_visualization(frame_view, sim_key, viz_key),
+            )
 
     # Build / load cached detections
     all_detections = time_stage(
@@ -783,28 +917,34 @@ def main():
     )
 
     catalogue_output = "catalogue_v2.json" if args.use_new_clustering else "catalogue_simple.json"
+    scene_output = "scene_labels_v2.json" if args.use_new_clustering else "scene_labels.json"
+    video_meta = None
+
     if args.use_new_clustering:
         video_meta = time_stage(
             timings,
             "video_meta",
             lambda: build_video_meta(dataset),
         )
-        time_stage(
+
+    def run_clustering_stage(stage_name: str):
+        if args.use_new_clustering:
+            return time_stage(
+                timings,
+                stage_name,
+                lambda: generate_person_catalogue_v2(
+                    all_detections,
+                    video_meta=video_meta,
+                    output_file=catalogue_output,
+                    use_rerank=True,
+                    cooccurrence_constraint=True,
+                    use_pose=args.pose_filter,
+                ),
+            )
+
+        return time_stage(
             timings,
-            "clustering",
-            lambda: generate_person_catalogue_v2(
-                all_detections,
-                video_meta=video_meta,
-                output_file=catalogue_output,
-                use_rerank=True,
-                cooccurrence_constraint=True,
-                use_pose=args.pose_filter,
-            ),
-        )
-    else:
-        time_stage(
-            timings,
-            "clustering",
+            stage_name,
             lambda: generate_person_catalogue(
                 all_detections,
                 output_file=catalogue_output,
@@ -826,7 +966,47 @@ def main():
             ),
         )
 
-    scene_output = "scene_labels_v2.json" if args.use_new_clustering else "scene_labels.json"
+    run_clustering_stage("clustering_pass1" if args.finetune_reid else "clustering")
+
+    if args.finetune_reid:
+        finetuned_weights = time_stage(
+            timings,
+            "reid_finetune",
+            lambda: finetune_reid_train(
+                detections=all_detections,
+                catalogue_path=catalogue_output,
+                output_weights="checkpoints/clipreid_ft.pth",
+                epochs=args.finetune_epochs,
+                min_frames=args.finetune_min_frames,
+                min_probability=args.finetune_min_prob,
+            ),
+        )
+
+        if finetuned_weights is not None:
+            ft_cache_path = detections_cache_path(
+                args.dataset_dir,
+                dataset,
+                reid_backbone=args.reid_backbone,
+                variant="ft",
+            )
+
+            def rebuild_finetuned_cache():
+                updated = reembed_detections_with_finetuned_clip(
+                    all_detections,
+                    reid_backbone=args.reid_backbone,
+                    clip_weights_path=str(finetuned_weights),
+                )
+                save_all_detections(ft_cache_path, updated)
+                print(f"[cache] Saved fine-tuned detections to {ft_cache_path}")
+                return updated
+
+            all_detections = time_stage(
+                timings,
+                "reid_reembed",
+                rebuild_finetuned_cache,
+            )
+            run_clustering_stage("clustering_pass2")
+
     if args.scene_backend == "videomae":
         time_stage(
             timings,
@@ -847,6 +1027,25 @@ def main():
                 catalogue_path=catalogue_output,
                 output_file=scene_output,
                 backend=args.scene_backend,
+            ),
+        )
+
+    if args.visualizer in {"rerun", "both"}:
+        rerun_output = args.rerun_save or ("" if args.rerun_spawn else "recording.rrd")
+        catalogue_payload = _read_json(catalogue_output) if Path(catalogue_output).exists() else {}
+        scene_payload = _read_json(scene_output) if Path(scene_output).exists() else []
+        time_stage(
+            timings,
+            "rerun_export",
+            lambda: export_to_rerun(
+                detections=all_detections,
+                catalogue_payload=catalogue_payload,
+                scene_payload=scene_payload,
+                output_rrd=rerun_output or None,
+                spawn_viewer=args.rerun_spawn,
+                seed=51,
+                sample_every=args.rerun_sample_every,
+                max_frames_per_clip=args.rerun_max_frames_per_clip,
             ),
         )
 

@@ -5,7 +5,7 @@ This repo contains a full two-part take-home pipeline:
 - Part A: assign a stable global person ID across four clips
 - Part B: label each clip as `normal` or `crime` with timestamped justification and involved global IDs
 
-The default pipeline now uses BoT-SORT, an OSNet+CLIP ensemble, HDBSCAN multi-prototype clustering, and Gemini-grounded scene classification. Legacy behavior is still reachable with explicit flags such as `--legacy-clustering`, `--tracker-type bytetrack`, `--reid-backbone osnet_ain`, and `--scene-backend videomae`.
+The default pipeline now uses YOLO26, BoT-SORT, an OSNet+CLIP ensemble, HDBSCAN multi-prototype clustering, and Gemini-grounded scene classification. Legacy behavior is still reachable with explicit flags such as `--legacy-clustering`, `--tracker-type bytetrack`, `--reid-backbone osnet_ain`, `--yolo-weights yolo11m.pt`, and `--scene-backend videomae`.
 
 ## Quickstart
 
@@ -15,6 +15,12 @@ source br_env/bin/activate
 pip install -U -r requirements.txt
 export GEMINI_API_KEY=...
 make reproduce
+```
+
+Optional Rerun export support:
+
+```bash
+pip install -r requirements-rerun.txt
 ```
 
 Default outputs:
@@ -28,11 +34,14 @@ If you need the stage-1 baseline-style path instead, run `make reproduce-stage1`
 
 ## What's New vs. Baseline
 
+- YOLO26 replaces YOLO11 as the default detector while keeping `--yolo-weights` as an override.
 - BoT-SORT replaces ByteTrack for stronger appearance-aware tracking.
 - ReID supports `osnet_ain`, `clipreid`, and `ensemble`.
+- ReID can optionally self-bootstrap a CLIP fine-tune pass with `--finetune-reid`.
 - Stage-1 clustering adds k-reciprocal reranking and the co-occurrence constraint.
 - Stage-2 clustering adds top-K keyframes, k-medoids prototypes, HDBSCAN, and torso-color tie-breaks.
 - Scene classification supports Gemini JSON grounding with a legacy VideoMAE path preserved behind `--scene-backend videomae`.
+- Visualization backends can now be selected with `--visualizer {none,fiftyone,rerun,both}`.
 - Evaluation and ablation are first-class outputs.
 
 ## Reproducibility
@@ -47,10 +56,23 @@ make ablation
 
 Important runtime options:
 
+- `--yolo-weights PATH`: override the detector weights, default `yolo26m.pt`
 - `--reid-weights PATH`: load a fine-tuned CLIP checkpoint
+- `--finetune-reid`: run a pass-1 pseudo-label fine-tune and a pass-2 reclustering step
+- `--finetune-min-frames`, `--finetune-min-prob`, `--finetune-epochs`: control pseudo-label eligibility and training time
 - `--pose-filter`: enable MediaPipe-based keyframe filtering in V2 clustering
+- `--visualizer rerun --rerun-save recording.rrd`: export a standalone Rerun recording
+- `--visualizer none`: skip the FiftyOne similarity/UMAP stages entirely
 - `--evaluate`: run `evaluate.py` against `ground_truth.json`
 - `--legacy-clustering`: keep the old `catalogue_simple.json` path
+
+Examples:
+
+```bash
+python run.py --dataset-dir "$VIDEOS" --finetune-reid
+python run.py --dataset-dir "$VIDEOS" --visualizer rerun --rerun-save recording.rrd
+python run.py --dataset-dir "$VIDEOS" --visualizer none
+```
 
 ## Outputs
 
@@ -58,11 +80,14 @@ Important runtime options:
 - `catalogue_v2.json`: stage-2 catalogue with adaptive epsilon/gate
 - `scene_labels.json`: legacy scene labels
 - `scene_labels_v2.json`: Gemini/InternVideo-oriented scene labels with `rationale`
-- `ground_truth.json`: empty annotation template for manual GT entry
+- `ground_truth.json`: annotation file for evaluation, seedable from predictions
+- `recording.rrd`: optional Rerun recording when `--visualizer rerun` is used
 - `ablation_report.md`: aggregated report across configured stages
 
 ## Notes
 
 - `GEMINI_API_KEY` is required for the Gemini scene backend.
-- `ground_truth.json` is intentionally a blank template; annotate it manually before running evaluation.
+- Seed `ground_truth.json` from the current predictions with `python scripts/seed_ground_truth.py`, then hand-correct it before evaluation.
+- `--finetune-reid` currently supports `--reid-backbone clipreid` and `ensemble`.
+- The fine-tuned second-pass detections are cached separately under `$(VIDEOS)/.cache/*_all_detections_ft.json`.
 - `scripts/ablation.py` expects `eval_report.json` to be produced by each run.

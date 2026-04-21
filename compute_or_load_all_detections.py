@@ -1,7 +1,7 @@
-from pathlib import Path
 import json
 import hashlib
 from typing import List, Dict, Any
+from pathlib import Path
 
 def _cache_dir(dataset_dir: str) -> Path:
     p = Path(dataset_dir) / ".cache"
@@ -23,9 +23,15 @@ def _cache_key_for_dataset(dataset, reid_backbone: str = "osnet_ain") -> str:
     j = json.dumps(meta, sort_keys=True)
     return hashlib.md5(j.encode("utf-8")).hexdigest()
 
-def detections_cache_path(dataset_dir: str, dataset, reid_backbone: str = "osnet_ain") -> Path:
+def detections_cache_path(
+    dataset_dir: str,
+    dataset,
+    reid_backbone: str = "osnet_ain",
+    variant: str = "",
+) -> Path:
     key = _cache_key_for_dataset(dataset, reid_backbone=reid_backbone)
-    return _cache_dir(dataset_dir) / f"{dataset.name}_{key}_all_detections.json"
+    suffix = f"_{variant}" if variant else ""
+    return _cache_dir(dataset_dir) / f"{dataset.name}_{key}_all_detections{suffix}.json"
 
 def _to_serializable_embedding(emb):
     # Handles numpy arrays or any object with .tolist()
