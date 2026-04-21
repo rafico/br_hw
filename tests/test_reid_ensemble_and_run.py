@@ -59,6 +59,23 @@ class EnsembleExtractorTests(unittest.TestCase):
 
 
 class RunTrackerTests(unittest.TestCase):
+    def test_load_detector_falls_back_from_yolo26_to_yolo11_when_missing(self):
+        class FakeModel:
+            names = {0: "person"}
+
+        def fake_yolo(weights):
+            if weights == "yolo26m.pt":
+                raise FileNotFoundError("missing yolo26m.pt")
+            if weights == "yolo11m.pt":
+                return FakeModel()
+            raise AssertionError(f"unexpected weights: {weights}")
+
+        with mock.patch.object(run, "YOLO", side_effect=fake_yolo):
+            model, person_class_id = run.load_detector("yolo26m.pt")
+
+        self.assertIsInstance(model, FakeModel)
+        self.assertEqual(person_class_id, 0)
+
     def test_load_tracker_supports_botsort(self):
         with mock.patch.object(run, "BotSort", autospec=True) as bot_sort:
             sentinel = object()

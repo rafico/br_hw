@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -25,9 +26,28 @@ def _yolo_inference_kwargs() -> dict:
     }
 
 
+def _fallback_detector_weights(model_path: str) -> Optional[str]:
+    requested = Path(str(model_path)).name
+    match = re.fullmatch(r"yolo26([nslmx])\.pt", requested)
+    if not match:
+        return None
+    return f"yolo11{match.group(1)}.pt"
+
+
 def load_detector(model_path: str = "yolo26m.pt", *, yolo_cls=YOLO):
     """Return (ultralytics YOLO model, person_class_id)."""
-    model = yolo_cls(model_path)
+    try:
+        model = yolo_cls(model_path)
+    except FileNotFoundError as exc:
+        fallback_weights = _fallback_detector_weights(model_path)
+        if fallback_weights is None:
+            raise
+        print(
+            f"Detector weights '{model_path}' could not be loaded ({exc}). "
+            f"Falling back to '{fallback_weights}'. "
+            "If you want YOLO26 specifically, upgrade Ultralytics or provide a valid checkpoint path via --yolo-weights."
+        )
+        model = yolo_cls(fallback_weights)
     person_class_id = next((k for k, v in model.names.items() if v == "person"), None)
     return model, person_class_id
 
