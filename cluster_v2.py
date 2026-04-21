@@ -28,11 +28,57 @@ from rerank import kreciprocal_rerank
 LOGGER = logging.getLogger(__name__)
 
 
+class _KMedoids:
+    """Minimal PAM-style k-medoids matching the slice of sklearn_extra.cluster.KMedoids we use."""
+
+    def __init__(self, n_clusters: int, metric: str = "cosine", random_state: int = 0, max_iter: int = 100):
+        self.n_clusters = int(n_clusters)
+        self.metric = metric
+        self.random_state = int(random_state)
+        self.max_iter = int(max_iter)
+        self.medoid_indices_: Optional[np.ndarray] = None
+
+    def fit(self, X):
+        X = np.asarray(X)
+        n = X.shape[0]
+        k = max(1, min(self.n_clusters, n))
+        dist = pairwise_distances(X, metric=self.metric)
+
+        rng = np.random.default_rng(self.random_state)
+        medoids = [int(rng.integers(0, n))]
+        while len(medoids) < k:
+            min_d = np.maximum(dist[:, medoids].min(axis=1), 0.0)
+            total = float(min_d.sum())
+            if total <= 0.0:
+                remaining = np.setdiff1d(np.arange(n), np.asarray(medoids), assume_unique=False)
+                if remaining.size == 0:
+                    break
+                medoids.append(int(rng.choice(remaining)))
+            else:
+                medoids.append(int(rng.choice(n, p=min_d / total)))
+        medoids_arr = np.asarray(medoids, dtype=np.int64)
+
+        for _ in range(self.max_iter):
+            labels = np.argmin(dist[:, medoids_arr], axis=1)
+            new_medoids = medoids_arr.copy()
+            for j in range(medoids_arr.size):
+                members = np.where(labels == j)[0]
+                if members.size == 0:
+                    continue
+                sub_cost = dist[np.ix_(members, members)].sum(axis=1)
+                new_medoids[j] = members[int(np.argmin(sub_cost))]
+            if np.array_equal(new_medoids, medoids_arr):
+                break
+            medoids_arr = new_medoids
+
+        self.medoid_indices_ = medoids_arr
+        return self
+
+
 def _get_clustering_backends():
     import hdbscan
-    from sklearn_extra.cluster import KMedoids
 
-    return KMedoids, hdbscan.HDBSCAN
+    return _KMedoids, hdbscan.HDBSCAN
 
 
 def _safe_float(value) -> Optional[float]:
@@ -354,7 +400,7 @@ def generate_person_catalogue_v2(
         min_samples=1,
         cluster_selection_epsilon=epsilon,
         cluster_selection_method="eom",
-    ).fit(d_track)
+    ).fit(np.ascontiguousarray(d_track, dtype=np.float64))
     labels = np.asarray(clusterer.labels_, dtype=np.int32)
     probabilities = np.asarray(
         getattr(clusterer, "probabilities_", np.ones_like(labels, dtype=np.float32)),

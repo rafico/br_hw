@@ -9,7 +9,6 @@ transformers
 fiftyone
 fiftyone-brain
 scikit-learn
-scikit-learn-extra
 scipy
 tqdm
 umap-learn
