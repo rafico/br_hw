@@ -14,7 +14,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import CLIPImageProcessor, CLIPModel, get_cosine_schedule_with_warmup
 
-from generate_person_catalogue import tracklets_cooccur
+from clustering.common import tracklets_cooccur
 from utils_determinism import seed_everything
 
 LOGGER = logging.getLogger(__name__)

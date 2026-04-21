@@ -11,16 +11,9 @@ import numpy as np
 from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import normalize
 
-from generate_person_catalogue import (
-    _compute_motion_profile,
-    _frame_ranges,
-    _parse_clip_start_time,
-    _smooth_embeddings,
-    assign_person_ids,
-    build_catalogue,
-    build_tracklets,
-    tracklets_cooccur,
-)
+from clustering.catalogue import assign_person_ids, build_catalogue
+from clustering.common import _compute_motion_profile, _frame_ranges, _parse_clip_start_time, _safe_float, _smooth_embeddings, tracklets_cooccur
+from clustering.tracklets import build_tracklets
 from reid_ensemble import filter_crops_for_reid
 from reid_model import torso_color_chi2
 from rerank import kreciprocal_rerank
