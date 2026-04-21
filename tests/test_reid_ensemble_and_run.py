@@ -59,6 +59,10 @@ class EnsembleExtractorTests(unittest.TestCase):
 
 
 class RunTrackerTests(unittest.TestCase):
+    def test_default_yolo_weights_maps_model_family(self):
+        self.assertEqual(run._default_yolo_weights("yolov11"), "yolo11m.pt")
+        self.assertEqual(run._default_yolo_weights("yolov26"), "yolo26m.pt")
+
     def test_load_detector_falls_back_from_yolo26_to_yolo11_when_missing(self):
         class FakeModel:
             names = {0: "person"}

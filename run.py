@@ -37,6 +37,15 @@ _read_json = _reembed.read_json
 build_video_meta = _orchestrator.build_video_meta
 
 
+def _default_yolo_weights(yolo_model: str = "yolov26", size: str = "m") -> str:
+    normalized_model = str(yolo_model).lower()
+    if normalized_model == "yolov11":
+        return f"yolo11{size}.pt"
+    if normalized_model == "yolov26":
+        return f"yolo26{size}.pt"
+    raise ValueError(f"Unsupported YOLO model family: {yolo_model!r}")
+
+
 def load_detector(model_path: str = "yolo26m.pt"):
     return _vision.load_detector(model_path, yolo_cls=YOLO)
 
@@ -143,7 +152,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Create a FiftyOne dataset from a video directory.")
     parser.add_argument("--fo-dataset-name", default="re_id", help="Name of the dataset")
     parser.add_argument("--dataset-dir", required=True, help="Path to the videos directory")
-    parser.add_argument("--yolo-weights", default="yolo26m.pt", help="Detector weights to load via Ultralytics")
+    parser.add_argument("--yolo-model", default="yolov26", choices=["yolov11", "yolov26"], help="Detector family preset used for the default medium checkpoint")
+    parser.add_argument("--yolo-weights", default="", help="Explicit detector weights path/name; overrides --yolo-model")
     parser.add_argument("--show", action="store_true", help="Show live video visualization during processing")
     parser.add_argument("--overwrite-loading", action="store_true", help="reload fo dataset")
     parser.add_argument("--overwrite-algo", action="store_true", help="recompute embedding")
@@ -194,6 +204,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if not args.yolo_weights:
+        args.yolo_weights = _default_yolo_weights(args.yolo_model)
     _orchestrator.run_pipeline(args)
 
 
