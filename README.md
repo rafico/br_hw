@@ -12,7 +12,7 @@ The default pipeline now uses BoT-SORT, an OSNet+CLIP ensemble, HDBSCAN multi-pr
 ```bash
 python -m venv br_env
 source br_env/bin/activate
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 export GEMINI_API_KEY=...
 make reproduce
 ```
