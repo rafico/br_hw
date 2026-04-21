@@ -1,229 +1,68 @@
-# A Toy - Video Person Re-Identification and Scene Classification
+# Video Person Re-Identification and Scene Classification
 
-A toy system for detecting, tracking, and re-identifying persons across multiple video clips, with automatic scene classification for normal vs. crime detection.
+This repo contains a full two-part take-home pipeline:
 
-## Features
+- Part A: assign a stable global person ID across four clips
+- Part B: label each clip as `normal` or `crime` with timestamped justification and involved global IDs
 
-- **Person Detection & Tracking**: Uses YOLO11 for detection and ByteTrack for multi-object tracking
-- **Re-Identification (ReID)**: Extracts appearance features using OSNet to match persons across videos
-- **Cross-Clip Person Catalogue**: Generates a unified catalog of unique individuals across all video clips
-- **Scene Classification**: Classifies video clips as "normal" or "crime" using VideoMAE action recognition
-- **Visual Analytics**: Integration with FiftyOne for interactive visualization and exploration
+The default pipeline now uses BoT-SORT, an OSNet+CLIP ensemble, HDBSCAN multi-prototype clustering, and Gemini-grounded scene classification. Legacy behavior is still reachable with explicit flags such as `--legacy-clustering`, `--tracker-type bytetrack`, `--reid-backbone osnet_ain`, and `--scene-backend videomae`.
 
-## Architecture
-
-### Pipeline Overview
-
-1. **Detection & Tracking** (`run.py`, `reid_model.py`)
-   - Detects persons using YOLO11
-   - Tracks them across frames with ByteTrack
-   - Extracts ReID embeddings using OSNet
-
-2. **Person Catalogue Generation** (`generate_person_catalogue.py`)
-   - Groups detections into tracklets (per-clip tracks)
-   - Computes representative embeddings for each tracklet
-   - Clusters tracklets across clips with cross-clip constraints
-   - Assigns global person IDs
-
-3. **Scene Classification** (`classify_scenes.py`)
-   - Runs VideoMAE action recognition model
-   - Classifies clips based on detected actions
-
-## Installation
-
-### Setup
+## Quickstart
 
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-## Usage
-
-### Basic Usage
-
-Process videos in a directory:
-
-```bash
-# Activate virtual environment
-source br_env/bin/activate  # or: source venv/bin/activate
-
-# Run the pipeline (generates both person catalogue and scene labels)
-python run.py --dataset-dir /path/to/videos
-```
-
-### Common Options
-
-```bash
-# Show live visualization during processing
-python run.py --dataset-dir ./videos --show
-
-# Force reprocessing (recommended for first run)
-python run.py --dataset-dir ./videos --overwrite-loading --overwrite-algo
-
-# Increase batch size for faster processing (if GPU memory allows)
-python run.py --dataset-dir ./videos --det-batch-size 16
-```
-
-### Quick Start (for this assignment)
-
-```bash
-# Setup environment
 python -m venv br_env
 source br_env/bin/activate
 pip install -r requirements.txt
-
-# Run on the provided videos
-python run.py --dataset-dir /path/to/videos --overwrite-loading --overwrite-algo
+export GEMINI_API_KEY=...
+make reproduce
 ```
 
-This will generate two key output files:
-- `catalogue_simple.json` - Person identity catalogue (Part A)
-- `scene_labels.json` - Scene classification with justifications (Part B)
+Default outputs:
 
-### Command-Line Arguments
+- `catalogue_v2.json`
+- `scene_labels_v2.json`
+- `eval_report.json`
+- `eval_report.md`
 
-- `--dataset-dir`: Path to directory containing video files (required)
-- `--fo-dataset-name`: Name for FiftyOne dataset (default: "re_id")
-- `--show`: Display live video processing visualization
-- `--overwrite-loading`: Reload FiftyOne dataset from scratch
-- `--overwrite-algo`: Recompute embeddings and brain runs
-- `--sim-key`: Brain key for similarity index (default: "embd_sim")
-- `--viz-key`: Brain key for visualization (default: "embd_viz")
+If you need the stage-1 baseline-style path instead, run `make reproduce-stage1`.
 
-## Output Files
+## What's New vs. Baseline
 
-### 1. Person Catalogue (`catalogue_simple.json`)
+- BoT-SORT replaces ByteTrack for stronger appearance-aware tracking.
+- ReID supports `osnet_ain`, `clipreid`, and `ensemble`.
+- Stage-1 clustering adds k-reciprocal reranking and the co-occurrence constraint.
+- Stage-2 clustering adds top-K keyframes, k-medoids prototypes, HDBSCAN, and torso-color tie-breaks.
+- Scene classification supports Gemini JSON grounding with a legacy VideoMAE path preserved behind `--scene-backend videomae`.
+- Evaluation and ablation are first-class outputs.
 
-Contains unique persons identified across all videos:
+## Reproducibility
 
-```json
-{
-  "summary": {
-    "total_unique_persons": 15,
-    "total_tracklets": 42,
-    "parameters": {...}
-  },
-  "catalogue": {
-    "1": [
-      {
-        "clip_id": "video1",
-        "local_track_id": 3,
-        "frame_ranges": [[10, 150]],
-        "num_frames": 141
-      }
-    ]
-  }
-}
+`make reproduce` runs the stage-2 pipeline on `$(VIDEOS)` from the `Makefile`.
+
+```bash
+make clean-cache
+make reproduce
+make ablation
 ```
 
-### 2. Scene Labels (`scene_labels.json`)
+Important runtime options:
 
-Classification of each video clip:
+- `--reid-weights PATH`: load a fine-tuned CLIP checkpoint
+- `--pose-filter`: enable MediaPipe-based keyframe filtering in V2 clustering
+- `--evaluate`: run `evaluate.py` against `ground_truth.json`
+- `--legacy-clustering`: keep the old `catalogue_simple.json` path
 
-```json
-[
-  {
-    "clip_id": "video1",
-    "label": "normal"
-  },
-  {
-    "clip_id": "video2",
-    "label": "crime"
-  }
-]
-```
+## Outputs
 
-## Configuration
+- `catalogue_simple.json`: legacy catalogue path
+- `catalogue_v2.json`: stage-2 catalogue with adaptive epsilon/gate
+- `scene_labels.json`: legacy scene labels
+- `scene_labels_v2.json`: Gemini/InternVideo-oriented scene labels with `rationale`
+- `ground_truth.json`: empty annotation template for manual GT entry
+- `ablation_report.md`: aggregated report across configured stages
 
-### ReID Model Settings
+## Notes
 
-Edit `run.py` to configure the ReID extractor:
-
-```python
-reid_extractor = load_reid_extractor(
-    model_name="osnet_ain_x1_0",  # Options: osnet_x1_0, osnet_ain_x1_0
-    image_size=(256, 128),
-    batch_size=32,
-    device="cuda"
-)
-```
-
-### Clustering Parameters
-Adjust in `run.py` when calling `generate_person_catalogue()`:
-
-```python
-generate_person_catalogue(
-    all_detections,
-    min_cluster_size=2,              # Minimum tracklets per cluster
-    cluster_selection_epsilon=0.025,  # Distance threshold for merging
-    use_median=True                   # Use median vs. mean for representatives
-)
-```
-### Scene Classification
-
-Modify crime keywords in `classify_scenes.py`:
-
-```python
-CRIME_KEYWORDS = {
-    "fighting", "punch", "kick", "slap", "headbutting", 
-    "wrestling", "shooting", "robbery", "stealing", 
-    "pickpocketing", "assault", "theft"
-}
-```
-## Key Components
-
-### DetectionReIDExtractor (`reid_model.py`)
-
-Extracts appearance features from person crops:
-- Uses torchreid's OSNet models
-- Handles batch processing for efficiency
-
-### Person Catalogue Generator (`generate_person_catalogue.py`)
-
-Cross-clip person matching with constraints:
-- **Co-occurrence constraint**: Persons appearing in same frame can't be matched
-- **Cross-clip enforcement**: Only matches tracklets from different videos
-- Custom greedy clustering algorithm with distance threshold
-
-### Scene Classifier (`classify_scenes.py`)
-
-Action-based scene understanding:
-- Uses VideoMAE pre-trained on Kinetics-400
-- Maps detected actions to crime/normal categories
-
-## Advanced Features
-
-### Caching System
-
-Detection embeddings are cached to speed up reruns:
-- Cache location: `<dataset_dir>/.cache/`
-- Automatically invalidated when dataset changes
-- Force recomputation with `--overwrite-algo`
-
-### FiftyOne Integration
-
-Visualize results interactively:
-
-```python
-import fiftyone as fo
-
-# Load processed dataset
-dataset = fo.load_dataset("re_id")
-
-# Launch browser interface
-session = fo.launch_app(dataset)
-```
-
-### Model Download Issues
-
-Models are downloaded automatically from:
-- YOLO: Ultralytics Hub
-- OSNet: torchreid pretrained models
-- VideoMAE: Hugging Face Hub
-
-Ensure internet connectivity on first run.
+- `GEMINI_API_KEY` is required for the Gemini scene backend.
+- `ground_truth.json` is intentionally a blank template; annotate it manually before running evaluation.
+- `scripts/ablation.py` expects `eval_report.json` to be produced by each run.

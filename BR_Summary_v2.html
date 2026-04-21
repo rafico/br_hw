@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BR Summary V2</title>
+  <style>
+    body { font-family: "DejaVu Sans", sans-serif; margin: 32px; color: #111; }
+    h1, h2 { margin: 0 0 8px 0; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 15px; margin-top: 18px; }
+    p, li, td, th { font-size: 11px; line-height: 1.35; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border: 1px solid #999; padding: 6px; text-align: left; }
+    ul { margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h1>BR Summary V2</h1>
+  <p>
+    The upgraded pipeline keeps the original end-to-end structure but replaces the weakest baseline links:
+    BoT-SORT adds appearance-aware tracking, ReID supports an OSNet plus CLIP ensemble, stage-1 clustering adds
+    reranking and a co-occurrence rule, stage-2 clustering switches to top-K keyframes plus k-medoids and HDBSCAN,
+    and scene classification can use Gemini with grounded JSON events and person IDs.
+  </p>
+
+  <h2>Approach</h2>
+  <ul>
+    <li>Detection and tracking: YOLO11m plus BoT-SORT with shared embeddings.</li>
+    <li>ReID: OSNet, CLIP, or concatenated ensemble features with normalized caching.</li>
+    <li>Clustering: legacy union-find path is preserved; V2 adds multi-prototype distances, re-ranking, HDBSCAN, and torso-color tie-break reassignment.</li>
+    <li>Scene labeling: VideoMAE remains available, while Gemini can emit strict JSON crime events, timestamps, rationale, and involved global IDs.</li>
+    <li>Evaluation: frame-level clustering metrics plus clip-level scene metrics and crime-span IoU.</li>
+  </ul>
+
+  <h2>Ablation Template</h2>
+  <table>
+    <tr><th>Stage</th><th>Expected Change</th></tr>
+    <tr><td>Baseline</td><td>Original ByteTrack + OSNet + legacy clustering + VideoMAE.</td></tr>
+    <tr><td>Stage 1</td><td>Better tracking continuity and stronger pairwise merges from reranking and co-occurrence awareness.</td></tr>
+    <tr><td>Stage 2</td><td>Lower ID count, cleaner cross-clip stitching, and stronger crime localization with grounded events.</td></tr>
+  </table>
+
+  <h2>Limitations</h2>
+  <ul>
+    <li>Handheld camera motion still hurts both tracking and scene grounding.</li>
+    <li>768x432 video resolution limits part-level and texture-heavy cues.</li>
+    <li>Gemini requires network access and a valid API key; the offline fallback is only partially wired.</li>
+  </ul>
+
+  <h2>Next Steps</h2>
+  <ul>
+    <li>Add cross-camera spatio-temporal priors for better re-entry reasoning.</li>
+    <li>Use segmentation-aware crops for more occlusion-robust embeddings.</li>
+    <li>Fuse audio if a future version includes it.</li>
+  </ul>
+</body>
+</html>

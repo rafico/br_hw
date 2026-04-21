@@ -8,7 +8,7 @@ def _cache_dir(dataset_dir: str) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-def _cache_key_for_dataset(dataset) -> str:
+def _cache_key_for_dataset(dataset, reid_backbone: str = "osnet_ain") -> str:
     """
     Make the cache robust to simple changes by hashing a few cheap properties.
     Extend this if you want stricter invalidation.
@@ -17,25 +17,36 @@ def _cache_key_for_dataset(dataset) -> str:
         "name": dataset.name,
         "media_type": getattr(dataset, "media_type", None),
         "num_samples": len(dataset),
-        "version": "v2",  # bump if you change the structure
+        "reid_backbone": str(reid_backbone),
+        "version": "v4",  # bump if you change the structure
     }
     j = json.dumps(meta, sort_keys=True)
     return hashlib.md5(j.encode("utf-8")).hexdigest()
 
-def detections_cache_path(dataset_dir: str, dataset) -> Path:
-    key = _cache_key_for_dataset(dataset)
+def detections_cache_path(dataset_dir: str, dataset, reid_backbone: str = "osnet_ain") -> Path:
+    key = _cache_key_for_dataset(dataset, reid_backbone=reid_backbone)
     return _cache_dir(dataset_dir) / f"{dataset.name}_{key}_all_detections.json"
 
 def _to_serializable_embedding(emb):
     # Handles numpy arrays or any object with .tolist()
     return emb.tolist() if hasattr(emb, "tolist") else emb
 
+
+def _to_serializable_value(value):
+    return value.tolist() if hasattr(value, "tolist") else value
+
 def save_all_detections(path: Path, all_detections: List[Dict[str, Any]]) -> None:
-    # ensure JSON-serializable embeddings
+    # ensure JSON-serializable arrays
     serializable = []
     for d in all_detections:
-        e = d.get("embeddings", None)
-        serializable.append({**d, "embeddings": _to_serializable_embedding(e)})
+        serializable.append(
+            {
+                **d,
+                "embeddings": _to_serializable_embedding(d.get("embeddings", None)),
+                "torso_hist": _to_serializable_value(d.get("torso_hist", None)),
+                "box_xyxy_abs": _to_serializable_value(d.get("box_xyxy_abs", None)),
+            }
+        )
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(serializable))
     tmp.replace(path)
@@ -63,6 +74,7 @@ def compute_all_detections(frame_view, dataset) -> List[Dict[str, Any]]:
             clip_by_id[sample_id] = Path(dataset[sample_id].filepath).stem
 
         clip_id = clip_by_id[sample_id]
+        video_path = dataset[sample_id].filepath
         detections = getattr(fs.detections, "detections", [])
         for det in detections:
             if det.embeddings is None:
@@ -93,6 +105,7 @@ def compute_all_detections(frame_view, dataset) -> List[Dict[str, Any]]:
             all_detections.append(
                 {
                     "clip_id": clip_id,
+                    "video_path": video_path,
                     "frame_num": int(fs.frame_number),
                     "track_id": int(det.index),
                     "embeddings": det.embeddings,  # converted on save
@@ -100,6 +113,10 @@ def compute_all_detections(frame_view, dataset) -> List[Dict[str, Any]]:
                     "quality": _safe_float(getattr(det, "quality", None)),
                     "sharpness": _safe_float(getattr(det, "sharpness", None)),
                     "timestamp_sec": _safe_float(getattr(det, "timestamp_sec", None)),
+                    "torso_hist": getattr(det, "torso_hist", None),
+                    "box_xyxy_abs": getattr(det, "box_xyxy_abs", None),
+                    "frame_width": _safe_float(getattr(det, "frame_width", None)),
+                    "frame_height": _safe_float(getattr(det, "frame_height", None)),
                     "center_x": center_x,
                     "center_y": center_y,
                     "bbox_w": bbox_w,
@@ -109,8 +126,19 @@ def compute_all_detections(frame_view, dataset) -> List[Dict[str, Any]]:
 
     return all_detections
 
-def compute_or_load_all_detections(*, frame_view, dataset, dataset_dir: str, overwrite_algo: bool):
-    cache_path = detections_cache_path(dataset_dir, dataset)
+def compute_or_load_all_detections(
+    *,
+    frame_view,
+    dataset,
+    dataset_dir: str,
+    overwrite_algo: bool,
+    reid_backbone: str = "osnet_ain",
+):
+    cache_path = detections_cache_path(
+        dataset_dir,
+        dataset,
+        reid_backbone=reid_backbone,
+    )
     if cache_path.exists() and not overwrite_algo:
         print(f"[cache] Loading all_detections from {cache_path}")
         return load_all_detections(cache_path)

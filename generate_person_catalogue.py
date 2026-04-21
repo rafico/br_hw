@@ -10,6 +10,8 @@ from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 
+from rerank import kreciprocal_rerank
+
 
 def _normalize_rows(arr: np.ndarray) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float32)
@@ -49,6 +51,28 @@ def _check_distance_matrix(D: np.ndarray):
         raise ValueError("Distance matrix has negative entries.")
     if not np.allclose(D, D.T, atol=1e-6):
         raise ValueError("Distance matrix must be symmetric.")
+
+
+def tracklets_cooccur(t1: dict, t2: dict) -> bool:
+    if str(t1["clip_id"]) != str(t2["clip_id"]):
+        return False
+    for a1, a2 in t1["frame_ranges"]:
+        for b1, b2 in t2["frame_ranges"]:
+            if a1 <= b2 and b1 <= a2:
+                return True
+    return False
+
+
+def _components_cooccur(
+        members_a: List[int],
+        members_b: List[int],
+        tracklet_info: List[Dict[str, Any]],
+) -> bool:
+    return any(
+        tracklets_cooccur(tracklet_info[i], tracklet_info[j])
+        for i in members_a
+        for j in members_b
+    )
 
 
 def _parse_clip_start_time(clip_id: str) -> Optional[float]:
@@ -359,6 +383,7 @@ def build_distance_matrix(
         temporal_penalty: float = 0.0,
         temporal_max_gap_sec: Optional[float] = None,
         motion_penalty: float = 0.0,
+        use_rerank: bool = False,
 ) -> np.ndarray:
     """
     Build pairwise distance matrix between tracklets.
@@ -372,7 +397,25 @@ def build_distance_matrix(
         for i, t in enumerate(tracklet_info):
             print(f"  {i}: {t['clip_id']}_{t['track_id']} ({t['num_frames']} frames)")
 
-    if linkage == "representative":
+    if use_rerank:
+        X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
+        X = normalize(X)
+        base = kreciprocal_rerank(X)
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = _apply_temporal_motion_penalty(
+                    float(base[i, j]),
+                    tracklet_info[i],
+                    tracklet_info[j],
+                    temporal_penalty=temporal_penalty,
+                    temporal_max_gap_sec=temporal_max_gap_sec,
+                    motion_penalty=motion_penalty,
+                )
+                if not np.isfinite(d):
+                    d = 2.0
+                dist_matrix[i, j] = d
+                dist_matrix[j, i] = d
+    elif linkage == "representative":
         X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
         X = normalize(X)
         base = pairwise_distances(X, metric="cosine")
@@ -440,6 +483,7 @@ def build_sparse_candidate_pairs(
         temporal_penalty: float = 0.0,
         temporal_max_gap_sec: Optional[float] = None,
         motion_penalty: float = 0.0,
+        cooccurrence_constraint: bool = False,
 ) -> Tuple[List[Tuple[float, int, int]], int, float]:
     """
     Build candidate pairs via sparse neighbor search.
@@ -482,7 +526,12 @@ def build_sparse_candidate_pairs(
                 if dst_t == src_t:
                     continue
                 i, j = (src_t, dst_t) if src_t < dst_t else (dst_t, src_t)
-                if tracklet_info[i]["clip_id"] == tracklet_info[j]["clip_id"]:
+                if (
+                    not cooccurrence_constraint
+                    and tracklet_info[i]["clip_id"] == tracklet_info[j]["clip_id"]
+                ):
+                    continue
+                if tracklets_cooccur(tracklet_info[i], tracklet_info[j]):
                     continue
 
                 d = _apply_temporal_motion_penalty(
@@ -519,7 +568,12 @@ def build_sparse_candidate_pairs(
             dst_i = int(dst)
             if dst_i <= src:
                 continue
-            if tracklet_info[src]["clip_id"] == tracklet_info[dst_i]["clip_id"]:
+            if (
+                not cooccurrence_constraint
+                and tracklet_info[src]["clip_id"] == tracklet_info[dst_i]["clip_id"]
+            ):
+                continue
+            if tracklets_cooccur(tracklet_info[src], tracklet_info[dst_i]):
                 continue
             d = _tracklet_pair_distance(
                 tracklet_info[src],
@@ -541,8 +595,9 @@ def _cluster_from_sorted_pairs(
         tracklet_info: List[Dict[str, Any]],
         min_cluster_size: int,
         cluster_selection_epsilon: float,
+        cooccurrence_constraint: bool = True,
 ) -> np.ndarray:
-    """Union-find clustering with cross-clip constraint using pre-sorted candidate pairs."""
+    """Union-find clustering with cross-clip or co-occurrence constraints."""
     n = len(tracklet_info)
 
     # Union-find structures
@@ -553,6 +608,7 @@ def _cluster_from_sorted_pairs(
     # Track the set of clip_ids present in each component (by root index)
     clip_ids = [str(t["clip_id"]) for t in tracklet_info]
     comp_clip_sets: List[set] = [set([clip_ids[idx]]) for idx in range(n)]
+    comp_members: List[List[int]] = [[idx] for idx in range(n)]
 
     def find(x):
         if parent[x] != x:
@@ -569,25 +625,31 @@ def _cluster_from_sorted_pairs(
             parent[px] = py
             sizes[py] += sizes[px]
             comp_clip_sets[py] |= comp_clip_sets[px]
+            comp_members[py].extend(comp_members[px])
         elif rank[px] > rank[py]:
             parent[py] = px
             sizes[px] += sizes[py]
             comp_clip_sets[px] |= comp_clip_sets[py]
+            comp_members[px].extend(comp_members[py])
         else:
             parent[py] = px
             sizes[px] += sizes[py]
             comp_clip_sets[px] |= comp_clip_sets[py]
+            comp_members[px].extend(comp_members[py])
             rank[px] += 1
         return True
 
-    # Greedily merge closest pairs if within epsilon, and CROSS-CLIP constraint holds.
+    # Greedily merge closest pairs if within epsilon and the configured constraint holds.
     for dist, a, b in sorted_pairs:
         if dist > cluster_selection_epsilon:
             break
         ra, rb = find(a), find(b)
         if ra == rb:
             continue
-        if not comp_clip_sets[ra].isdisjoint(comp_clip_sets[rb]):
+        if cooccurrence_constraint:
+            if _components_cooccur(comp_members[ra], comp_members[rb], tracklet_info):
+                continue
+        elif not comp_clip_sets[ra].isdisjoint(comp_clip_sets[rb]):
             continue
         union(ra, rb)
 
@@ -618,7 +680,7 @@ def _cluster_from_sorted_pairs(
     )
 
     # Print clusters with original track_id
-    print("\nClusters (cross-clip):")
+    print("\nClusters:")
     for cluster_id, indices in enumerate(cluster_groups.values()):
         members = [f"{tracklet_info[i]['clip_id']}_{tracklet_info[i]['track_id']}" for i in sorted(indices)]
         print(f"  Cluster {cluster_id}: {{{', '.join(members)}}}")
@@ -637,10 +699,12 @@ def cluster_tracklets(
         tracklet_info: List[Dict[str, Any]],
         min_cluster_size: int = 2,
         cluster_selection_epsilon: float = 0.025,
+        cooccurrence_constraint: bool = True,
 ) -> np.ndarray:
-    """Cluster tracklets using custom greedy clustering with cross-clip constraints."""
+    """Cluster tracklets using custom greedy clustering."""
     print(
-        f"Using custom greedy clustering, epsilon={cluster_selection_epsilon} (cross-clip only)"
+        f"Using custom greedy clustering, epsilon={cluster_selection_epsilon}, "
+        f"cooccurrence_constraint={cooccurrence_constraint}"
     )
 
     sorted_pairs, total_pairs, threshold = build_dense_candidate_pairs(
@@ -656,6 +720,7 @@ def cluster_tracklets(
         tracklet_info=tracklet_info,
         min_cluster_size=min_cluster_size,
         cluster_selection_epsilon=cluster_selection_epsilon,
+        cooccurrence_constraint=cooccurrence_constraint,
     )
 
 
@@ -667,11 +732,12 @@ def cluster_tracklets_sparse(
         temporal_penalty: float = 0.0,
         temporal_max_gap_sec: Optional[float] = None,
         motion_penalty: float = 0.0,
+        cooccurrence_constraint: bool = True,
 ) -> np.ndarray:
     """Sparse radius-neighbor variant for large tracklet counts."""
     print(
         f"Using sparse radius-neighbor clustering, epsilon={cluster_selection_epsilon}, "
-        f"linkage={linkage} (cross-clip only)"
+        f"linkage={linkage}, cooccurrence_constraint={cooccurrence_constraint}"
     )
     sorted_pairs, total_pairs, threshold = build_sparse_candidate_pairs(
         tracklet_info,
@@ -680,6 +746,7 @@ def cluster_tracklets_sparse(
         temporal_penalty=temporal_penalty,
         temporal_max_gap_sec=temporal_max_gap_sec,
         motion_penalty=motion_penalty,
+        cooccurrence_constraint=cooccurrence_constraint,
     )
     print(
         f"Sparse candidate graph: kept {len(sorted_pairs):,}/{total_pairs:,} "
@@ -691,6 +758,7 @@ def cluster_tracklets_sparse(
         tracklet_info=tracklet_info,
         min_cluster_size=min_cluster_size,
         cluster_selection_epsilon=cluster_selection_epsilon,
+        cooccurrence_constraint=cooccurrence_constraint,
     )
 
 
@@ -702,6 +770,7 @@ def postprocess_singleton_merges(
         temporal_penalty: float = 0.0,
         temporal_max_gap_sec: Optional[float] = None,
         motion_penalty: float = 0.0,
+        cooccurrence_constraint: bool = True,
 ) -> np.ndarray:
     """
     Post-process noise labels by merging singleton tracklets into nearest valid cluster.
@@ -727,8 +796,13 @@ def postprocess_singleton_merges(
 
         for cluster_id in cluster_ids:
             members = np.where(labels == cluster_id)[0]
-            # Enforce cross-clip-only constraint.
-            if any(tracklet_info[m]["clip_id"] == clip_id for m in members):
+            if cooccurrence_constraint:
+                if any(
+                    tracklets_cooccur(tracklet_info[idx], tracklet_info[m])
+                    for m in members
+                ):
+                    continue
+            elif any(tracklet_info[m]["clip_id"] == clip_id for m in members):
                 continue
             d = min(
                 _tracklet_pair_distance(
@@ -821,6 +895,8 @@ def generate_person_catalogue(
         motion_penalty: float = 0.05,
         postprocess_merge: bool = True,
         postprocess_merge_epsilon: Optional[float] = None,
+        use_rerank: bool = False,
+        cooccurrence_constraint: bool = True,
 ):
     """
       1) Group detections by (clip_id, track_id) => tracklets
@@ -856,7 +932,12 @@ def generate_person_catalogue(
         return {}
 
     n_tracklets = len(tracklet_info)
-    use_sparse_path = use_sparse_neighbors and n_tracklets >= sparse_if_n_ge and not print_distances
+    use_sparse_path = (
+        use_sparse_neighbors
+        and n_tracklets >= sparse_if_n_ge
+        and not print_distances
+        and not use_rerank
+    )
     if use_sparse_path:
         labels = cluster_tracklets_sparse(
             tracklet_info,
@@ -866,6 +947,7 @@ def generate_person_catalogue(
             temporal_penalty=temporal_penalty,
             temporal_max_gap_sec=temporal_max_gap_sec,
             motion_penalty=motion_penalty,
+            cooccurrence_constraint=cooccurrence_constraint,
         )
     else:
         dist_matrix = build_distance_matrix(
@@ -875,6 +957,7 @@ def generate_person_catalogue(
             temporal_penalty=temporal_penalty,
             temporal_max_gap_sec=temporal_max_gap_sec,
             motion_penalty=motion_penalty,
+            use_rerank=use_rerank,
         )
         if print_distances:
             print(f"dist_matrix: {dist_matrix}")
@@ -883,6 +966,7 @@ def generate_person_catalogue(
             tracklet_info,
             min_cluster_size=min_cluster_size,
             cluster_selection_epsilon=cluster_selection_epsilon,
+            cooccurrence_constraint=cooccurrence_constraint,
         )
 
     merge_eps_used = None
@@ -900,6 +984,7 @@ def generate_person_catalogue(
             temporal_penalty=temporal_penalty,
             temporal_max_gap_sec=temporal_max_gap_sec,
             motion_penalty=motion_penalty,
+            cooccurrence_constraint=cooccurrence_constraint,
         )
 
     # Assign person IDs and build catalogue.
@@ -914,12 +999,14 @@ def generate_person_catalogue(
             "min_cluster_size": min_cluster_size,
             "cluster_selection_epsilon": cluster_selection_epsilon,
             "use_median": use_median,
-            "cross_clip_only": True,
+            "cross_clip_only": not cooccurrence_constraint,
+            "cooccurrence_constraint": cooccurrence_constraint,
             "linkage": linkage,
             "min_tracklet_frames": min_tracklet_frames,
             "sparse_neighbors_enabled": use_sparse_neighbors,
             "sparse_if_n_ge": sparse_if_n_ge,
             "sparse_path_used": use_sparse_path,
+            "use_rerank": use_rerank,
             "use_quality_weights": use_quality_weights,
             "quality_alpha": quality_alpha,
             "smooth_embeddings": smooth_embeddings,

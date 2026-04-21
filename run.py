@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import time
 from pathlib import Path
@@ -9,15 +10,19 @@ import fiftyone as fo
 import fiftyone.brain as fob
 import numpy as np
 import torch
-from boxmot import ByteTrack, DeepOcSort, StrongSort
+from boxmot import BotSort, ByteTrack, DeepOcSort, StrongSort
 from boxmot.utils import WEIGHTS as BOXMOT_WEIGHTS
 from ultralytics import YOLO
 
-from reid_model import DetectionReIDExtractor
+from cluster_v2 import generate_person_catalogue_v2
+import evaluate as evaluate_module
 from generate_person_catalogue import generate_person_catalogue
 from compute_or_load_all_detections import compute_or_load_all_detections
 from classify_scenes import classify_scenes
+from reid_ensemble import build_extractor
+from reid_model import torso_color_hist
 from utils_determinism import seed_everything
+from vlm_scene import classify_scenes_vlm
 
 
 def load_detector(model_path: str = "yolo11m.pt"):
@@ -39,12 +44,12 @@ def load_reid_extractor(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    return DetectionReIDExtractor(
-        model_name=model_name,
-        model_path=model_path,
-        image_size=image_size,
+    return build_extractor(
+        name=model_name,
         device=device,
+        image_size=image_size,
         batch_size=batch_size,
+        model_path=model_path,
         input_is_bgr=input_is_bgr,
     )
 
@@ -81,6 +86,21 @@ def load_tracker(
     reid_weights = Path(tracker_reid_weights) if tracker_reid_weights else _default_tracker_reid_weights()
 
     try:
+        if tracker_type == "botsort":
+            return BotSort(
+                reid_weights=reid_weights,
+                device=tracker_device,
+                half=use_half,
+                with_reid=True,
+                track_high_thresh=0.45,
+                track_low_thresh=0.15,
+                new_track_thresh=0.55,
+                match_thresh=0.8,
+                proximity_thresh=0.5,
+                appearance_thresh=0.25,
+                frame_rate=30,
+                fuse_first_associate=True,
+            )
         if tracker_type == "strongsort":
             return StrongSort(
                 reid_weights=reid_weights,
@@ -104,8 +124,30 @@ def load_tracker(
 
     raise ValueError(
         f"Unsupported tracker_type '{tracker_type}'. "
-        "Expected one of: bytetrack, strongsort, deepocsort."
+        "Expected one of: bytetrack, botsort, strongsort, deepocsort."
     )
+
+
+def _tracker_update_kw(tracker) -> Optional[str]:
+    try:
+        if "embs" in inspect.signature(tracker.update).parameters:
+            return "embs"
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        source = inspect.getsource(tracker.update)
+    except (OSError, TypeError):
+        source = ""
+
+    return "embs" if "embs" in source else None
+
+
+def update_tracker(tracker, detections, frame, features):
+    tracker_update_kw = _tracker_update_kw(tracker)
+    if tracker_update_kw:
+        return tracker.update(detections, frame, embs=features)
+    return tracker.update(detections, frame, features)
 
 
 def run_detection(model, frame, person_class_id):
@@ -204,6 +246,7 @@ def convert_to_fiftyone_detections(
         det_conf_scores: Optional[np.ndarray] = None,
         sharpness_scores: Optional[np.ndarray] = None,
         timestamp_sec: Optional[float] = None,
+        torso_hists: Optional[np.ndarray] = None,
 ):
     """Convert tracker results to FiftyOne Detection objects."""
     frame_detections = []
@@ -237,6 +280,7 @@ def convert_to_fiftyone_detections(
         quality = None
         det_conf = None
         sharpness = None
+        torso_hist = None
         if processed_features and det_index is not None and 0 <= det_index < len(processed_features):
             # ByteTrack returns the detection index in the last column; use it to
             # keep embeddings aligned even when the tracker reorders outputs.
@@ -247,6 +291,8 @@ def convert_to_fiftyone_detections(
                 det_conf = float(det_conf_scores[det_index])
             if sharpness_scores is not None and det_index < len(sharpness_scores):
                 sharpness = float(sharpness_scores[det_index])
+            if torso_hists is not None and det_index < len(torso_hists):
+                torso_hist = np.asarray(torso_hists[det_index], dtype=np.float32).tolist()
 
         det_kwargs = {}
         if quality is not None:
@@ -257,6 +303,11 @@ def convert_to_fiftyone_detections(
             det_kwargs["sharpness"] = sharpness
         if timestamp_sec is not None:
             det_kwargs["timestamp_sec"] = float(timestamp_sec)
+        if torso_hist is not None:
+            det_kwargs["torso_hist"] = torso_hist
+        det_kwargs["box_xyxy_abs"] = [float(x1), float(y1), float(x2), float(y2)]
+        det_kwargs["frame_width"] = int(width)
+        det_kwargs["frame_height"] = int(height)
 
         frame_detections.append(
             fo.Detection(
@@ -323,6 +374,7 @@ def _process_frame_batch(
         quality_scores = None
         det_conf_scores = None
         sharpness_scores = None
+        torso_hists = None
 
         if len(boxes) > 0:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -332,10 +384,14 @@ def _process_frame_batch(
             quality_scores, det_conf_scores, sharpness_scores = _compute_detection_quality(
                 rgb, boxes, detections
             )
+            torso_hists = np.stack(
+                [torso_color_hist(rgb, box) for box in boxes],
+                axis=0,
+            ).astype(np.float32)
         else:
             features = None
 
-        tracks = tracker.update(detections, frame, features)
+        tracks = update_tracker(tracker, detections, frame, features)
 
         if show_visuals:
             tracker.plot_results(frame, show_trajectories=True)
@@ -353,6 +409,7 @@ def _process_frame_batch(
             det_conf_scores=det_conf_scores,
             sharpness_scores=sharpness_scores,
             timestamp_sec=timestamp_sec,
+            torso_hists=torso_hists,
         )
         sample.frames[frame_number]["detections"] = fo.Detections(
             detections=frame_detections
@@ -441,6 +498,7 @@ def process_video_file(
         show_visuals: bool = False,
         det_batch_size: int = 8,
         reid_model_name: str = "osnet_ain_x1_0",
+        reid_backbone: Optional[str] = None,
         reid_model_path: str = "",
         tracker_type: str = "bytetrack",
         tracker_reid_weights: Optional[str] = None,
@@ -452,7 +510,7 @@ def process_video_file(
     # Load components
     model, person_class_id = load_detector("yolo11m.pt")
     reid_extractor = load_reid_extractor(
-        model_name=reid_model_name,
+        model_name=reid_backbone or reid_model_name,
         model_path=reid_model_path,
         device=device.type,
     )
@@ -580,11 +638,18 @@ def parse_args():
     parser.add_argument('--viz-key', default='embd_viz', help='Brain key for visualization')
     parser.add_argument('--det-batch-size', type=int, default=8, help='Batch size for YOLO frame inference')
     parser.add_argument('--reid-model-name', default='osnet_ain_x1_0', help='Torchreid model name')
+    parser.add_argument(
+        '--reid-backbone',
+        default='ensemble',
+        choices=['osnet_ain', 'clipreid', 'ensemble'],
+        help='ReID feature extractor backend',
+    )
     parser.add_argument('--reid-model-path', default='', help='Optional fine-tuned ReID checkpoint path')
+    parser.add_argument('--reid-weights', default='', help='Override CLIP ReID checkpoint path')
     parser.add_argument(
         '--tracker-type',
-        default='bytetrack',
-        choices=['bytetrack', 'strongsort', 'deepocsort'],
+        default='botsort',
+        choices=['bytetrack', 'botsort', 'strongsort', 'deepocsort'],
         help='Tracker backend',
     )
     parser.add_argument(
@@ -606,7 +671,31 @@ def parse_args():
     parser.add_argument('--motion-penalty', type=float, default=0.05, help='Soft penalty on motion-profile mismatch')
     parser.add_argument('--disable-postprocess-merge', action='store_true', help='Disable post-clustering singleton merge pass')
     parser.add_argument('--postprocess-merge-epsilon', type=float, default=None, help='Distance threshold for post-clustering merges')
+    parser.add_argument('--use-rerank', action='store_true', help='Use k-reciprocal re-ranking on representative embeddings')
+    parser.add_argument('--cooccurrence-constraint', action='store_true', help='Allow same-clip merges only when tracklets do not overlap')
+    parser.set_defaults(use_new_clustering=True)
+    parser.add_argument('--use-new-clustering', dest='use_new_clustering', action='store_true', help='Use the HDBSCAN multi-prototype clustering pipeline')
+    parser.add_argument('--legacy-clustering', dest='use_new_clustering', action='store_false', help='Use the legacy catalogue_simple clustering pipeline')
+    parser.add_argument('--pose-filter', action='store_true', help='Enable MediaPipe pose filtering for V2 keyframe selection')
+    parser.add_argument('--scene-backend', default='gemini', choices=['gemini', 'videomae', 'internvideo'], help='Scene classification backend')
+    parser.add_argument('--evaluate', action='store_true', help='Run evaluation against ground_truth.json if available')
     return parser.parse_args()
+
+
+def build_video_meta(dataset) -> dict:
+    meta = {}
+    for sample in dataset.iter_samples(progress=False):
+        cap = cv2.VideoCapture(sample.filepath)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        cap.release()
+        if fps <= 1e-6:
+            fps = 30.0
+        meta[Path(sample.filepath).stem] = {
+            "fps": fps,
+            "frame_count": frame_count,
+        }
+    return meta
 
 
 def main():
@@ -633,7 +722,8 @@ def main():
                 show_visuals=args.show,
                 det_batch_size=args.det_batch_size,
                 reid_model_name=args.reid_model_name,
-                reid_model_path=args.reid_model_path,
+                reid_backbone=args.reid_backbone,
+                reid_model_path=args.reid_weights or args.reid_model_path,
                 tracker_type=args.tracker_type,
                 tracker_reid_weights=args.tracker_reid_weights or None,
                 tracker_half=args.tracker_half,
@@ -688,36 +778,88 @@ def main():
             dataset=dataset,
             dataset_dir=args.dataset_dir,
             overwrite_algo=args.overwrite_algo,
+            reid_backbone=args.reid_backbone,
         ),
     )
 
-    time_stage(
-        timings,
-        "clustering",
-        lambda: generate_person_catalogue(
-            all_detections,
-            output_file="catalogue_simple.json",
-            use_sparse_neighbors=not args.disable_sparse_clustering,
-            sparse_if_n_ge=args.sparse_threshold,
-            linkage=args.linkage,
-            min_tracklet_frames=args.min_tracklet_frames,
-            use_quality_weights=not args.disable_quality_weighting,
-            quality_alpha=args.quality_alpha,
-            smooth_embeddings=not args.disable_temporal_smoothing,
-            smoothing_window=args.smoothing_window,
-            temporal_penalty=args.temporal_penalty,
-            temporal_max_gap_sec=args.temporal_max_gap_sec,
-            motion_penalty=args.motion_penalty,
-            postprocess_merge=not args.disable_postprocess_merge,
-            postprocess_merge_epsilon=args.postprocess_merge_epsilon,
-        ),
-    )
+    catalogue_output = "catalogue_v2.json" if args.use_new_clustering else "catalogue_simple.json"
+    if args.use_new_clustering:
+        video_meta = time_stage(
+            timings,
+            "video_meta",
+            lambda: build_video_meta(dataset),
+        )
+        time_stage(
+            timings,
+            "clustering",
+            lambda: generate_person_catalogue_v2(
+                all_detections,
+                video_meta=video_meta,
+                output_file=catalogue_output,
+                use_rerank=True,
+                cooccurrence_constraint=True,
+                use_pose=args.pose_filter,
+            ),
+        )
+    else:
+        time_stage(
+            timings,
+            "clustering",
+            lambda: generate_person_catalogue(
+                all_detections,
+                output_file=catalogue_output,
+                use_sparse_neighbors=not args.disable_sparse_clustering,
+                sparse_if_n_ge=args.sparse_threshold,
+                linkage=args.linkage,
+                min_tracklet_frames=args.min_tracklet_frames,
+                use_quality_weights=not args.disable_quality_weighting,
+                quality_alpha=args.quality_alpha,
+                smooth_embeddings=not args.disable_temporal_smoothing,
+                smoothing_window=args.smoothing_window,
+                temporal_penalty=args.temporal_penalty,
+                temporal_max_gap_sec=args.temporal_max_gap_sec,
+                motion_penalty=args.motion_penalty,
+                postprocess_merge=not args.disable_postprocess_merge,
+                postprocess_merge_epsilon=args.postprocess_merge_epsilon,
+                use_rerank=args.use_rerank,
+                cooccurrence_constraint=args.cooccurrence_constraint,
+            ),
+        )
 
-    time_stage(
-        timings,
-        "scene_classification",
-        lambda: classify_scenes(dataset, all_detections),
-    )
+    scene_output = "scene_labels_v2.json" if args.use_new_clustering else "scene_labels.json"
+    if args.scene_backend == "videomae":
+        time_stage(
+            timings,
+            "scene_classification",
+            lambda: classify_scenes(
+                dataset,
+                all_detections,
+                output_file=scene_output,
+                catalogue_file=catalogue_output,
+            ),
+        )
+    else:
+        time_stage(
+            timings,
+            "scene_classification",
+            lambda: classify_scenes_vlm(
+                dataset,
+                catalogue_path=catalogue_output,
+                output_file=scene_output,
+                backend=args.scene_backend,
+            ),
+        )
+
+    if args.evaluate:
+        time_stage(
+            timings,
+            "evaluation",
+            lambda: evaluate_module.run(
+                gt_path="ground_truth.json",
+                pred_catalogue=catalogue_output,
+                pred_scene=scene_output,
+            ),
+        )
     write_timing_report(timings)
 
 #    launch_app(frame_view)
