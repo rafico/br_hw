@@ -104,6 +104,8 @@ def _validate_scene_payload(payload: dict) -> dict:
         end = float(event.get("t_end_sec", start))
         if start < 0.0 or end < 0.0:
             raise ValueError("event timestamps must be non-negative")
+        if end < start:
+            raise ValueError("event timestamps must satisfy start <= end")
         ids = [int(pid) for pid in event.get("global_person_ids", [])]
         events.append(
             {

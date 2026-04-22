@@ -10,6 +10,23 @@ import vlm_scene
 
 
 class VLMSceneTests(unittest.TestCase):
+    def test_validate_scene_payload_rejects_inverted_event_timestamps(self):
+        with self.assertRaisesRegex(ValueError, "start <= end"):
+            vlm_scene._validate_scene_payload(
+                {
+                    "label": "crime",
+                    "confidence": 0.9,
+                    "events": [
+                        {
+                            "type": "assault",
+                            "t_start_sec": 1.2,
+                            "t_end_sec": 0.8,
+                            "global_person_ids": [1],
+                        }
+                    ],
+                }
+            )
+
     def test_build_person_presence_and_resolve_persons_for_event(self):
         catalogue = {
             "1": [{"clip_id": "4", "frame_ranges": [[1, 10]]}],
