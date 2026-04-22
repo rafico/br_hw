@@ -322,7 +322,36 @@ def parse_args(argv=None):
     parser.add_argument("--finetune-min-prob", type=float, default=0.9, help="Minimum cluster_probability gate for pseudo-label fine-tuning")
     parser.add_argument("--finetune-epochs", type=int, default=5, help="Epoch count for pseudo-label CLIP fine-tuning")
     parser.add_argument("--evaluate", action="store_true", help="Run evaluation against ground_truth.json if available")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    def require_positive(name, value):
+        if value is not None and value <= 0:
+            parser.error(f"{name} must be > 0")
+
+    def require_non_negative(name, value):
+        if value is not None and value < 0:
+            parser.error(f"{name} must be >= 0")
+
+    def require_unit_interval(name, value):
+        if value is not None and not (0.0 <= value <= 1.0):
+            parser.error(f"{name} must be in [0, 1]")
+
+    require_positive("--det-batch-size", args.det_batch_size)
+    require_positive("--sparse-threshold", args.sparse_threshold)
+    require_positive("--min-tracklet-frames", args.min_tracklet_frames)
+    require_unit_interval("--quality-alpha", args.quality_alpha)
+    require_positive("--smoothing-window", args.smoothing_window)
+    require_non_negative("--temporal-penalty", args.temporal_penalty)
+    require_positive("--temporal-max-gap-sec", args.temporal_max_gap_sec)
+    require_non_negative("--motion-penalty", args.motion_penalty)
+    require_positive("--postprocess-merge-epsilon", args.postprocess_merge_epsilon)
+    require_positive("--rerun-sample-every", args.rerun_sample_every)
+    require_positive("--rerun-max-frames-per-clip", args.rerun_max_frames_per_clip)
+    require_positive("--finetune-min-frames", args.finetune_min_frames)
+    require_unit_interval("--finetune-min-prob", args.finetune_min_prob)
+    require_positive("--finetune-epochs", args.finetune_epochs)
+
+    return args
 
 
 def main(argv=None):

@@ -87,6 +87,20 @@ class RunTrackerTests(unittest.TestCase):
         self.assertEqual(args.yolo_model, "yolov11")
         self.assertEqual(args.rerun_save, "demo.rrd")
 
+    def test_parse_args_rejects_invalid_numeric_flags(self):
+        invalid_argv_cases = [
+            ["--dataset-dir", "/tmp/videos", "--rerun-sample-every", "0"],
+            ["--dataset-dir", "/tmp/videos", "--quality-alpha", "1.5"],
+            ["--dataset-dir", "/tmp/videos", "--temporal-penalty", "-0.1"],
+            ["--dataset-dir", "/tmp/videos", "--finetune-min-prob", "-0.1"],
+            ["--dataset-dir", "/tmp/videos", "--finetune-epochs", "0"],
+        ]
+
+        for argv in invalid_argv_cases:
+            with self.subTest(argv=argv):
+                with self.assertRaises(SystemExit):
+                    run.parse_args(argv)
+
     def test_main_populates_default_yolo_weights_from_selected_family(self):
         captured = {}
 
