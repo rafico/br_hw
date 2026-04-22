@@ -14,6 +14,7 @@ from qa.output_validation import (
     validate_scene_payload,
 )
 from qa.runner import OFFLINE_TEST_MODULES, build_suite_commands
+from scripts.seed_ground_truth import build_ground_truth
 
 
 class OutputValidationTests(unittest.TestCase):
@@ -196,6 +197,67 @@ class RunnerTests(unittest.TestCase):
         bundle_command = next(command for command in commands if command.name == "manual_visual_review_bundle")
         self.assertIn("scripts/prepare_manual_visual_review.py", bundle_command.argv)
         self.assertIn(str(Path.cwd() / "qa_artifacts" / "manual_visual_review.json"), bundle_command.argv)
+
+
+class SeedGroundTruthTests(unittest.TestCase):
+    def test_build_ground_truth_rejects_invalid_scene_payload(self):
+        catalogue_payload = {
+            "catalogue": {
+                "1": [
+                    {
+                        "clip_id": "clip_1",
+                        "local_track_id": 7,
+                        "frame_ranges": [[1, 2]],
+                    }
+                ]
+            }
+        }
+        scene_payload = [
+            {
+                "clip_id": "clip_1",
+                "label": "crime",
+                "crime_segments": [
+                    {
+                        "timestamp_start": 0.0,
+                        "timestamp_end": 1.0,
+                        "involved_people_global": [True],
+                    }
+                ],
+            }
+        ]
+
+        with self.assertRaisesRegex(ValueError, "scene payload failed validation"):
+            build_ground_truth(catalogue_payload, scene_payload)
+
+    def test_build_ground_truth_collects_int_person_ids_only(self):
+        catalogue_payload = {
+            "catalogue": {
+                "1": [
+                    {
+                        "clip_id": "clip_1",
+                        "local_track_id": 7,
+                        "frame_ranges": [[1, 2]],
+                    }
+                ]
+            }
+        }
+        scene_payload = [
+            {
+                "clip_id": "clip_1",
+                "label": "crime",
+                "crime_segments": [
+                    {
+                        "timestamp_start": 0.0,
+                        "timestamp_end": 1.0,
+                        "involved_people_global": [1],
+                    }
+                ],
+            }
+        ]
+
+        ground_truth = build_ground_truth(catalogue_payload, scene_payload)
+        self.assertEqual(ground_truth["scenes"][0]["crime_person_global_ids"], [1])
+
 
 class ManualReviewTests(unittest.TestCase):
     def test_validate_detections_payload_rejects_bool_and_missing_fields(self):

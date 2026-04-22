@@ -3,9 +3,35 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _ensure_repo_root_on_path() -> None:
+    repo_root = str(REPO_ROOT)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_repo_root_on_path()
+
+from qa.output_validation import validate_catalogue_payload, validate_scene_payload
+
+
+def _is_json_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _raise_if_invalid(label: str, errors: list[str]) -> None:
+    if errors:
+        raise ValueError(f"{label} payload failed validation:\n- " + "\n- ".join(errors))
 
 
 def build_ground_truth(catalogue_payload: dict, scene_payload: list[dict]) -> dict:
+    _raise_if_invalid("catalogue", validate_catalogue_payload(catalogue_payload))
+    _raise_if_invalid("scene", validate_scene_payload(scene_payload))
+
     persons = []
     for global_id in sorted(catalogue_payload.get("catalogue", {}), key=lambda value: int(value)):
         appearances = []
@@ -30,7 +56,7 @@ def build_ground_truth(catalogue_payload: dict, scene_payload: list[dict]) -> di
                 int(person_id)
                 for segment in scene.get("crime_segments", [])
                 for person_id in segment.get("involved_people_global", [])
-                if isinstance(person_id, int)
+                if _is_json_int(person_id)
             }
         )
         scenes.append(
@@ -55,16 +81,16 @@ def build_ground_truth(catalogue_payload: dict, scene_payload: list[dict]) -> di
     }
 
 
-def parse_args():
+def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Seed ground_truth.json from current predictions")
     parser.add_argument("--catalogue", default="catalogue_v2.json")
     parser.add_argument("--scenes", default="scene_labels_v2.json")
     parser.add_argument("--output", default="ground_truth.json")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main():
-    args = parse_args()
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
     with open(args.catalogue, "r", encoding="utf-8") as f:
         catalogue_payload = json.load(f)
     with open(args.scenes, "r", encoding="utf-8") as f:
@@ -77,4 +103,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
