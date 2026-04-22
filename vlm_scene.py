@@ -248,24 +248,34 @@ def classify_scenes_vlm(
                 }
             )
 
+        final_label = "crime" if crime_segments else "normal"
+        if final_label != validated["label"]:
+            LOGGER.warning(
+                "Normalized scene label for clip %s from %s to %s based on %d event(s)",
+                clip_id,
+                validated["label"],
+                final_label,
+                len(crime_segments),
+            )
+
+        justification_events = [
+            {
+                "type": segment["type"],
+                "t_start_sec": segment["timestamp_start"],
+                "t_end_sec": segment["timestamp_end"],
+                "global_person_ids": segment["involved_people_global"],
+            }
+            for segment in crime_segments
+        ]
+
         results.append(
             {
                 "clip_id": clip_id,
-                "label": validated["label"],
-                "justification": justify(
-                    [
-                        {
-                            "type": segment["type"],
-                            "t_start_sec": segment["timestamp_start"],
-                            "t_end_sec": segment["timestamp_end"],
-                            "global_person_ids": segment["involved_people_global"],
-                        }
-                        for segment in crime_segments
-                    ]
-                ),
+                "label": final_label,
+                "justification": justify(justification_events),
                 "rationale": validated.get("rationale", ""),
                 "max_confidence": round(float(validated["confidence"]), 4),
-                "crime_segments": crime_segments if validated["label"] == "crime" else [],
+                "crime_segments": crime_segments if final_label == "crime" else [],
             }
         )
 

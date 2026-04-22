@@ -68,6 +68,84 @@ class VLMSceneTests(unittest.TestCase):
         self.assertEqual(results[0]["label"], "crime")
         self.assertEqual(results[0]["crime_segments"][0]["involved_people_global"], [1])
 
+    def test_classify_scenes_vlm_normalizes_normal_label_with_events_to_crime(self):
+        sample = SimpleNamespace(
+            filepath="/tmp/4.mp4",
+            metadata=SimpleNamespace(frame_rate=10.0),
+        )
+        dataset = [sample]
+        catalogue_payload = {"catalogue": {"1": [{"clip_id": "4", "frame_ranges": [[1, 10]]}]}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            catalogue_path = Path(tmpdir) / "catalogue_v2.json"
+            output_path = Path(tmpdir) / "scene_labels_v2.json"
+            catalogue_path.write_text(json.dumps(catalogue_payload), encoding="utf-8")
+
+            with mock.patch.object(
+                vlm_scene,
+                "_call_gemini",
+                return_value={
+                    "label": "normal",
+                    "confidence": 0.9,
+                    "events": [
+                        {
+                            "type": "assault",
+                            "t_start_sec": 0.1,
+                            "t_end_sec": 0.8,
+                            "global_person_ids": [],
+                            "evidence": "fight",
+                        }
+                    ],
+                    "rationale": "Observed a physical altercation.",
+                },
+            ), self.assertLogs(vlm_scene.LOGGER, level="WARNING") as logs:
+                results = vlm_scene.classify_scenes_vlm(
+                    dataset,
+                    catalogue_path=str(catalogue_path),
+                    output_file=str(output_path),
+                    backend="gemini",
+                )
+
+        self.assertEqual(results[0]["label"], "crime")
+        self.assertTrue(results[0]["crime_segments"])
+        self.assertIn("assault", results[0]["justification"])
+        self.assertTrue(any("Normalized scene label" in message for message in logs.output))
+
+    def test_classify_scenes_vlm_normalizes_crime_label_without_events_to_normal(self):
+        sample = SimpleNamespace(
+            filepath="/tmp/4.mp4",
+            metadata=SimpleNamespace(frame_rate=10.0),
+        )
+        dataset = [sample]
+        catalogue_payload = {"catalogue": {"1": [{"clip_id": "4", "frame_ranges": [[1, 10]]}]}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            catalogue_path = Path(tmpdir) / "catalogue_v2.json"
+            output_path = Path(tmpdir) / "scene_labels_v2.json"
+            catalogue_path.write_text(json.dumps(catalogue_payload), encoding="utf-8")
+
+            with mock.patch.object(
+                vlm_scene,
+                "_call_gemini",
+                return_value={
+                    "label": "crime",
+                    "confidence": 0.9,
+                    "events": [],
+                    "rationale": "No crime evidence remained after review.",
+                },
+            ), self.assertLogs(vlm_scene.LOGGER, level="WARNING") as logs:
+                results = vlm_scene.classify_scenes_vlm(
+                    dataset,
+                    catalogue_path=str(catalogue_path),
+                    output_file=str(output_path),
+                    backend="gemini",
+                )
+
+        self.assertEqual(results[0]["label"], "normal")
+        self.assertEqual(results[0]["crime_segments"], [])
+        self.assertEqual(results[0]["justification"], "No criminal activity detected in the clip.")
+        self.assertTrue(any("Normalized scene label" in message for message in logs.output))
+
 
 class EvaluateTests(unittest.TestCase):
     def test_run_returns_none_when_ground_truth_missing(self):

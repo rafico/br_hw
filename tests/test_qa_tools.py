@@ -111,6 +111,36 @@ class OutputValidationTests(unittest.TestCase):
         self.assertTrue(any("timestamp_start must be numeric" in error for error in errors))
         self.assertTrue(any("must be an int" in error for error in errors))
 
+    def test_validate_scene_payload_rejects_normal_label_with_segments(self):
+        payload = [
+            {
+                "clip_id": "clip_1",
+                "label": "normal",
+                "crime_segments": [
+                    {
+                        "timestamp_start": 0.0,
+                        "timestamp_end": 1.0,
+                        "involved_people_global": [7],
+                    }
+                ],
+            }
+        ]
+
+        errors = validate_scene_payload(payload)
+        self.assertTrue(any("must be empty when label is 'normal'" in error for error in errors))
+
+    def test_validate_scene_payload_rejects_crime_label_without_segments(self):
+        payload = [
+            {
+                "clip_id": "clip_1",
+                "label": "crime",
+                "crime_segments": [],
+            }
+        ]
+
+        errors = validate_scene_payload(payload)
+        self.assertTrue(any("must be non-empty when label is 'crime'" in error for error in errors))
+
     def test_validate_eval_report_payload_checks_metric_bounds(self):
         payload = {
             "person_reid": {

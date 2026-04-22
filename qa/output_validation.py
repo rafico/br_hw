@@ -96,6 +96,11 @@ def validate_scene_payload(payload: Any) -> list[str]:
         if not isinstance(crime_segments, list):
             continue
 
+        if label == "normal":
+            _append_error(errors, len(crime_segments) == 0, f"{path}.crime_segments must be empty when label is 'normal'")
+        if label == "crime":
+            _append_error(errors, len(crime_segments) > 0, f"{path}.crime_segments must be non-empty when label is 'crime'")
+
         for seg_index, segment in enumerate(crime_segments):
             seg_path = f"{path}.crime_segments[{seg_index}]"
             _append_error(errors, isinstance(segment, dict), f"{seg_path} must be an object")
