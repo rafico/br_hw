@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-import cv2
 import numpy as np
 
 
@@ -51,6 +50,8 @@ def _draw_box_with_label(
         *,
         thickness: int = 2,
 ) -> None:
+    import cv2
+
     clipped = _clip_box(image.shape, box_xyxy)
     if clipped is None:
         return

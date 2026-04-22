@@ -7,8 +7,6 @@ import time
 from pathlib import Path
 from typing import Dict, List
 
-import cv2
-
 LOGGER = logging.getLogger(__name__)
 CRIME_TAXONOMY = [
     "assault",
@@ -27,6 +25,11 @@ def _sample_fps(sample) -> float:
     frame_rate = getattr(metadata, "frame_rate", None)
     if frame_rate:
         return float(frame_rate)
+    try:
+        import cv2
+    except ImportError:
+        return 30.0
+
     cap = cv2.VideoCapture(sample.filepath)
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
     cap.release()

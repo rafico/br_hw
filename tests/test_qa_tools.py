@@ -8,7 +8,7 @@ from qa.output_validation import (
     validate_eval_report_payload,
     validate_scene_payload,
 )
-from qa.runner import build_suite_commands
+from qa.runner import OFFLINE_TEST_MODULES, build_suite_commands
 
 
 class OutputValidationTests(unittest.TestCase):
@@ -89,9 +89,12 @@ class RunnerTests(unittest.TestCase):
         commands = build_suite_commands("offline", python_bin="/usr/bin/python3")
         names = [command.name for command in commands]
 
-        self.assertIn("unit_tests", names)
+        self.assertIn("offline_unit_tests", names)
         self.assertIn("run_help", names)
         self.assertIn("qa_validate_help", names)
+        offline_unit_cmd = next(command for command in commands if command.name == "offline_unit_tests")
+        self.assertEqual(offline_unit_cmd.argv[:4], ("/usr/bin/python3", "-m", "unittest", "-v"))
+        self.assertEqual(tuple(offline_unit_cmd.argv[4:]), OFFLINE_TEST_MODULES)
 
     def test_build_suite_commands_for_dataset_suite_requires_dataset_dir(self):
         with self.assertRaises(ValueError):

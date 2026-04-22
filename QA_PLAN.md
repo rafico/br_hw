@@ -20,6 +20,8 @@ make qa-validate
 
 Use `make qa-release-local` for the full local release matrix. It exercises the legacy path, stage-2 path, fine-tune path, Rerun export, and JSON validation.
 
+`make qa-offline` is the lightweight gate for environments without the full ML stack. It runs dependency-light regression modules plus CLI/help smoke. Use `make qa-unit` when the full runtime dependencies are installed.
+
 ## Manual Review Prep
 
 Generate the manual-review bundle before signoff:

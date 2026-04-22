@@ -5,36 +5,67 @@ video processing, dataset IO, and re-embedding logic can evolve independently.
 """
 
 import argparse
+import importlib
 
-from boxmot import BotSort, ByteTrack, DeepOcSort, StrongSort
-from ultralytics import YOLO
 
-from pipeline import dataset as _dataset
-from pipeline import orchestrator as _orchestrator
-from pipeline import reembed as _reembed
-from pipeline import timings as _timings
-from pipeline import vision as _vision
+class _LazyModule:
+    def __init__(self, module_name: str):
+        self._module_name = module_name
+        self._module = None
 
-_yolo_inference_kwargs = _vision._yolo_inference_kwargs
-run_detection = _vision.run_detection
-extract_reid_features = _vision.extract_reid_features
-_compute_detection_quality = _vision._compute_detection_quality
-convert_to_fiftyone_detections = _vision.convert_to_fiftyone_detections
-_extract_person_detections = _vision._extract_person_detections
-_process_frame_batch = _vision._process_frame_batch
-process_single_video = _vision.process_single_video
-configure_dataset_visualization = _dataset.configure_dataset_visualization
-get_frame_view = _dataset.get_frame_view
-compute_similarity = _dataset.compute_similarity
-compute_visualization = _dataset.compute_visualization
-launch_app = _dataset.launch_app
-time_stage = _timings.time_stage
-write_timing_report = _timings.write_timing_report
-_normalize_rows = _reembed._normalize_rows
-_load_rgb_frame_for_reembedding = _reembed._load_rgb_frame_for_reembedding
-_merge_clip_embedding = _reembed._merge_clip_embedding
-_read_json = _reembed.read_json
-build_video_meta = _orchestrator.build_video_meta
+    def _load(self):
+        if self._module is None:
+            self._module = importlib.import_module(self._module_name)
+        return self._module
+
+    def __getattr__(self, name: str):
+        return getattr(self._load(), name)
+
+
+def _load_boxmot_symbols():
+    module = importlib.import_module("boxmot")
+    return {
+        "BotSort": module.BotSort,
+        "ByteTrack": module.ByteTrack,
+        "DeepOcSort": module.DeepOcSort,
+        "StrongSort": module.StrongSort,
+    }
+
+
+def _load_yolo_cls():
+    return importlib.import_module("ultralytics").YOLO
+
+
+class YOLO:
+    def __new__(cls, *args, **kwargs):
+        return _load_yolo_cls()(*args, **kwargs)
+
+
+class BotSort:
+    def __new__(cls, *args, **kwargs):
+        return _load_boxmot_symbols()["BotSort"](*args, **kwargs)
+
+
+class ByteTrack:
+    def __new__(cls, *args, **kwargs):
+        return _load_boxmot_symbols()["ByteTrack"](*args, **kwargs)
+
+
+class DeepOcSort:
+    def __new__(cls, *args, **kwargs):
+        return _load_boxmot_symbols()["DeepOcSort"](*args, **kwargs)
+
+
+class StrongSort:
+    def __new__(cls, *args, **kwargs):
+        return _load_boxmot_symbols()["StrongSort"](*args, **kwargs)
+
+
+_dataset = _LazyModule("pipeline.dataset")
+_orchestrator = _LazyModule("pipeline.orchestrator")
+_reembed = _LazyModule("pipeline.reembed")
+_timings = _LazyModule("pipeline.timings")
+_vision = _LazyModule("pipeline.vision")
 
 
 def _default_yolo_weights(yolo_model: str = "yolov26", size: str = "m") -> str:
@@ -92,6 +123,86 @@ def load_tracker(
 
 def _tracker_update_kw(tracker):
     return _vision._tracker_update_kw(tracker)
+
+
+def _yolo_inference_kwargs():
+    return _vision._yolo_inference_kwargs()
+
+
+def run_detection(model, frame, person_class_id):
+    return _vision.run_detection(model, frame, person_class_id)
+
+
+def extract_reid_features(reid_extractor, rgb, boxes, detections):
+    return _vision.extract_reid_features(reid_extractor, rgb, boxes, detections)
+
+
+def _compute_detection_quality(rgb_frame, boxes, detections):
+    return _vision._compute_detection_quality(rgb_frame, boxes, detections)
+
+
+def convert_to_fiftyone_detections(detections, features, boxes, sharpness_scores, color_hists):
+    return _vision.convert_to_fiftyone_detections(detections, features, boxes, sharpness_scores, color_hists)
+
+
+def _extract_person_detections(result, person_class_id):
+    return _vision._extract_person_detections(result, person_class_id)
+
+
+def _process_frame_batch(*args, **kwargs):
+    return _vision._process_frame_batch(*args, **kwargs)
+
+
+def process_single_video(*args, **kwargs):
+    return _vision.process_single_video(*args, **kwargs)
+
+
+def configure_dataset_visualization(dataset):
+    return _dataset.configure_dataset_visualization(dataset)
+
+
+def get_frame_view(dataset):
+    return _dataset.get_frame_view(dataset)
+
+
+def compute_similarity(frame_view, sim_key):
+    return _dataset.compute_similarity(frame_view, sim_key)
+
+
+def compute_visualization(frame_view, sim_key, viz_key):
+    return _dataset.compute_visualization(frame_view, sim_key, viz_key)
+
+
+def launch_app(frame_view):
+    return _dataset.launch_app(frame_view)
+
+
+def time_stage(*args, **kwargs):
+    return _timings.time_stage(*args, **kwargs)
+
+
+def write_timing_report(*args, **kwargs):
+    return _timings.write_timing_report(*args, **kwargs)
+
+
+def _normalize_rows(arr):
+    return _reembed._normalize_rows(arr)
+
+
+def _load_rgb_frame_for_reembedding(video_path, frame_num):
+    return _reembed._load_rgb_frame_for_reembedding(video_path, frame_num)
+
+
+def _merge_clip_embedding(existing_embedding, clip_embedding, reid_backbone):
+    return _reembed._merge_clip_embedding(existing_embedding, clip_embedding, reid_backbone)
+
+
+def _read_json(path):
+    return _reembed.read_json(path)
+
+
+def build_video_meta(dataset):
+    return _orchestrator.build_video_meta(dataset)
 
 
 def update_tracker(tracker, detections, frame, features):

@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SUITE_NAMES = ("unit", "offline", "dataset-smoke", "release-local", "manual-visual-prep")
+OFFLINE_TEST_MODULES = (
+    "tests.test_qa_tools",
+    "tests.test_rerank_and_clustering",
+    "tests.test_vlm_scene_and_evaluate",
+    "tests.test_rerun_visualizer",
+)
 
 
 @dataclass(frozen=True)
@@ -36,7 +42,8 @@ def build_suite_commands(
         CommandSpec("unit_tests", _python_cmd(python_bin, "-m", "unittest", "discover", "-s", "tests", "-v")),
     ]
 
-    offline_commands = unit_commands + [
+    offline_commands = [
+        CommandSpec("offline_unit_tests", _python_cmd(python_bin, "-m", "unittest", "-v", *OFFLINE_TEST_MODULES)),
         CommandSpec("run_help", _python_cmd(python_bin, "run.py", "--help")),
         CommandSpec("finetune_help", _python_cmd(python_bin, "finetune_reid.py", "--help")),
         CommandSpec("seed_ground_truth_help", _python_cmd(python_bin, "scripts/seed_ground_truth.py", "--help")),

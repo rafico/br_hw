@@ -3,12 +3,65 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from sklearn.metrics import pairwise_distances
-from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import normalize
 
 from clustering.common import _check_distance_matrix, tracklets_cooccur
 from rerank import kreciprocal_rerank
+
+try:
+    from sklearn.metrics import pairwise_distances as _sklearn_pairwise_distances
+    from sklearn.neighbors import NearestNeighbors as _SklearnNearestNeighbors
+    from sklearn.preprocessing import normalize as _sklearn_normalize
+except ImportError:
+    _sklearn_pairwise_distances = None
+    _SklearnNearestNeighbors = None
+    _sklearn_normalize = None
+
+
+def _normalize_rows(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.size == 0:
+        return arr.astype(np.float32, copy=False)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    return arr / np.where(norms == 0.0, 1.0, norms)
+
+
+def _normalize(arr: np.ndarray) -> np.ndarray:
+    if _sklearn_normalize is not None:
+        return _sklearn_normalize(arr)
+    return _normalize_rows(arr)
+
+
+def _pairwise_cosine_distances(x: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
+    x = _normalize_rows(np.asarray(x, dtype=np.float32))
+    if y is None:
+        y = x
+    else:
+        y = _normalize_rows(np.asarray(y, dtype=np.float32))
+    distances = 1.0 - np.matmul(x, y.T)
+    return np.clip(distances, 0.0, 2.0).astype(np.float32, copy=False)
+
+
+def _pairwise_distances(x: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
+    if _sklearn_pairwise_distances is not None:
+        return _sklearn_pairwise_distances(x, y, metric="cosine")
+    return _pairwise_cosine_distances(x, y)
+
+
+def _radius_neighbors(features: np.ndarray, radius: float) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    if _SklearnNearestNeighbors is not None:
+        nn = _SklearnNearestNeighbors(metric="cosine", algorithm="brute", radius=radius)
+        nn.fit(features)
+        return nn.radius_neighbors(features, return_distance=True)
+
+    dist_matrix = _pairwise_cosine_distances(features)
+    distances = []
+    neighbors = []
+    for row in dist_matrix:
+        keep = np.where(row <= float(radius))[0]
+        order = np.argsort(row[keep], kind="stable")
+        neighbors.append(keep[order].astype(np.int64, copy=False))
+        distances.append(row[keep][order].astype(np.float32, copy=False))
+    return distances, neighbors
 
 
 def _base_tracklet_distance(
@@ -18,16 +71,14 @@ def _base_tracklet_distance(
 ) -> float:
     """Base embedding distance before temporal/motion penalties."""
     if linkage == "representative":
-        return float(pairwise_distances(
+        return float(_pairwise_distances(
             t1["embedding"][None, :],
             t2["embedding"][None, :],
-            metric="cosine",
         )[0, 0])
 
-    D = pairwise_distances(
+    D = _pairwise_distances(
         t1["all_embeddings"],
         t2["all_embeddings"],
-        metric="cosine",
     )
     if linkage == "min":
         return float(D.min())
@@ -106,7 +157,7 @@ def build_distance_matrix(
 
     if use_rerank:
         X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
-        X = normalize(X)
+        X = _normalize(X)
         base = kreciprocal_rerank(X)
         for i in range(n):
             for j in range(i + 1, n):
@@ -124,8 +175,8 @@ def build_distance_matrix(
                 dist_matrix[j, i] = d
     elif linkage == "representative":
         X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
-        X = normalize(X)
-        base = pairwise_distances(X, metric="cosine")
+        X = _normalize(X)
+        base = _pairwise_distances(X)
         for i in range(n):
             for j in range(i + 1, n):
                 d = _apply_temporal_motion_penalty(
@@ -215,9 +266,7 @@ def build_sparse_candidate_pairs(
 
         X = np.concatenate(emb_chunks, axis=0).astype(np.float32)
         owners_arr = np.asarray(owners, dtype=np.int32)
-        nn = NearestNeighbors(metric="cosine", algorithm="brute", radius=threshold)
-        nn.fit(X)
-        distances, neighbors = nn.radius_neighbors(X, return_distance=True)
+        distances, neighbors = _radius_neighbors(X, threshold)
 
         best_pair_dist: Dict[Tuple[int, int], float] = {}
         for src_emb_idx, (dists, nbrs) in enumerate(zip(distances, neighbors)):
@@ -259,11 +308,9 @@ def build_sparse_candidate_pairs(
         return pairs, total_possible, threshold
 
     X = np.stack([t["embedding"] for t in tracklet_info], axis=0).astype(np.float32)
-    X = normalize(X)
+    X = _normalize(X)
     search_radius = cluster_selection_epsilon * (1.5 if linkage != "representative" else 1.1)
-    nn = NearestNeighbors(metric="cosine", algorithm="brute", radius=search_radius)
-    nn.fit(X)
-    distances, neighbors = nn.radius_neighbors(X, return_distance=True)
+    distances, neighbors = _radius_neighbors(X, search_radius)
 
     pairs: List[Tuple[float, int, int]] = []
     for src, (dists, nbrs) in enumerate(zip(distances, neighbors)):

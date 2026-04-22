@@ -81,8 +81,8 @@ The concrete QA process lives in [QA_PLAN.md](QA_PLAN.md).
 
 Local entrypoints:
 
-- `make qa-unit`: automated unit and regression tests
-- `make qa-offline`: unit tests plus CLI/help smoke, no dataset required
+- `make qa-unit`: full automated unit and regression suite, including dependency-heavy ML tests
+- `make qa-offline`: dependency-light offline regression subset plus CLI/help smoke, no dataset required
 - `make qa-dataset-smoke VIDEOS=/path/to/videos`: offline end-to-end smoke plus output validation
 - `make qa-release-local VIDEOS=/path/to/videos`: local release candidate matrix including fine-tune and Rerun
 - `make qa-manual-visual-prep VIDEOS=/path/to/videos`: generate the Rerun recording and sampled-frame review bundle for manual signoff

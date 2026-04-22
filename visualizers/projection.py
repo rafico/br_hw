@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.decomposition import PCA
+
+try:
+    from sklearn.decomposition import PCA as _SklearnPCA
+except ImportError:
+    _SklearnPCA = None
 
 
 def _pca_2d(features: np.ndarray) -> np.ndarray:
@@ -14,8 +18,13 @@ def _pca_2d(features: np.ndarray) -> np.ndarray:
         return np.zeros((1, 2), dtype=np.float32)
 
     n_components = 2 if min(features.shape[0], features.shape[1]) >= 2 else 1
-    coords = PCA(n_components=n_components, random_state=51).fit_transform(features)
-    coords = np.asarray(coords, dtype=np.float32)
+    if _SklearnPCA is not None:
+        coords = _SklearnPCA(n_components=n_components, random_state=51).fit_transform(features)
+        coords = np.asarray(coords, dtype=np.float32)
+    else:
+        centered = features - features.mean(axis=0, keepdims=True)
+        u, s, _ = np.linalg.svd(centered, full_matrices=False)
+        coords = (u[:, :n_components] * s[:n_components]).astype(np.float32, copy=False)
     if coords.shape[1] == 1:
         coords = np.column_stack([coords[:, 0], np.zeros((coords.shape[0],), dtype=np.float32)])
     return coords.astype(np.float32, copy=False)

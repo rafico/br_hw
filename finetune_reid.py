@@ -5,19 +5,33 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-import cv2
 import numpy as np
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, Dataset
-from transformers import CLIPImageProcessor, CLIPModel, get_cosine_schedule_with_warmup
 
 from clustering.common import tracklets_cooccur
 from utils_determinism import seed_everything
 
+if TYPE_CHECKING:
+    from transformers import CLIPImageProcessor
+
 LOGGER = logging.getLogger(__name__)
+
+
+class CLIPImageProcessor:
+    @staticmethod
+    def from_pretrained(*args, **kwargs):
+        from transformers import CLIPImageProcessor as _CLIPImageProcessor
+
+        return _CLIPImageProcessor.from_pretrained(*args, **kwargs)
+
+
+class CLIPModel:
+    @staticmethod
+    def from_pretrained(*args, **kwargs):
+        from transformers import CLIPModel as _CLIPModel
+
+        return _CLIPModel.from_pretrained(*args, **kwargs)
 
 
 def load_catalogue(catalogue_path: str = "catalogue_v2.json") -> dict:
@@ -151,6 +165,8 @@ def build_triplets(
 
 
 def _load_crop(det: dict) -> np.ndarray:
+    import cv2
+
     cap = cv2.VideoCapture(det["video_path"])
     cap.set(cv2.CAP_PROP_POS_FRAMES, max(int(det["frame_num"]) - 1, 0))
     ok, frame = cap.read()
@@ -164,8 +180,8 @@ def _load_crop(det: dict) -> np.ndarray:
     return cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
 
 
-class TripletDataset(Dataset):
-    def __init__(self, triplets: List[Tuple[dict, dict, dict]], processor: CLIPImageProcessor):
+class TripletDataset:
+    def __init__(self, triplets: List[Tuple[dict, dict, dict]], processor: "CLIPImageProcessor"):
         self.triplets = triplets
         self.processor = processor
 
@@ -192,6 +208,15 @@ def train(
     min_probability: float = 0.9,
     seed: int = 51,
 ) -> Optional[Path]:
+    try:
+        import torch
+        from torch.utils.data import DataLoader
+        from transformers import get_cosine_schedule_with_warmup
+    except ImportError as exc:
+        raise RuntimeError(
+            "Fine-tuning requires optional dependencies: torch, transformers, and opencv-python."
+        ) from exc
+
     seed_everything(seed)
     catalogue_payload = load_catalogue(catalogue_path)
     if detections is None:
@@ -223,7 +248,7 @@ def train(
         num_warmup_steps=max(total_steps // 10, 1),
         num_training_steps=total_steps,
     )
-    loss_fn = nn.TripletMarginLoss(margin=margin)
+    loss_fn = torch.nn.TripletMarginLoss(margin=margin)
 
     for _ in range(int(epochs)):
         for anchor_px, positive_px, negative_px in dataloader:

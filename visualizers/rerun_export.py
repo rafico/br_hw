@@ -5,7 +5,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
-import cv2
 import numpy as np
 
 from .common import color_for_identifier_rgba, format_identity_label
@@ -71,6 +70,8 @@ def _group_detections_by_clip_frame(detections: Iterable[dict]) -> Dict[str, Dic
 
 
 def _load_rgb_frame(video_path: str, frame_num: int) -> Optional[np.ndarray]:
+    import cv2
+
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, max(int(frame_num) - 1, 0))
     ok, frame = cap.read()
