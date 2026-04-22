@@ -47,6 +47,26 @@ class OutputValidationTests(unittest.TestCase):
         self.assertTrue(any("cluster_probability" in error for error in errors))
         self.assertTrue(any("start <=" in error for error in errors))
 
+    def test_validate_catalogue_payload_rejects_bool_ids_and_probabilities(self):
+        payload = {
+            "catalogue": {
+                "1": [
+                    {
+                        "clip_id": "",
+                        "local_track_id": True,
+                        "frame_ranges": [[True, 3]],
+                        "cluster_probability": False,
+                    }
+                ]
+            }
+        }
+
+        errors = validate_catalogue_payload(payload)
+        self.assertTrue(any("clip_id must be a non-empty string" in error for error in errors))
+        self.assertTrue(any("local_track_id must be an int" in error for error in errors))
+        self.assertTrue(any("values must be ints" in error for error in errors))
+        self.assertTrue(any("cluster_probability" in error for error in errors))
+
     def test_validate_scene_payload_rejects_invalid_segments(self):
         payload = [
             {
@@ -66,6 +86,25 @@ class OutputValidationTests(unittest.TestCase):
         self.assertTrue(any("timestamp_start <=" in error for error in errors))
         self.assertTrue(any("must be an int" in error for error in errors))
 
+    def test_validate_scene_payload_rejects_bool_segment_values(self):
+        payload = [
+            {
+                "clip_id": "clip_1",
+                "label": "crime",
+                "crime_segments": [
+                    {
+                        "timestamp_start": True,
+                        "timestamp_end": 2.0,
+                        "involved_people_global": [False],
+                    }
+                ],
+            }
+        ]
+
+        errors = validate_scene_payload(payload)
+        self.assertTrue(any("timestamp_start must be numeric" in error for error in errors))
+        self.assertTrue(any("must be an int" in error for error in errors))
+
     def test_validate_eval_report_payload_checks_metric_bounds(self):
         payload = {
             "person_reid": {
@@ -82,6 +121,23 @@ class OutputValidationTests(unittest.TestCase):
         errors = validate_eval_report_payload(payload)
         self.assertTrue(any("v_measure" in error for error in errors))
         self.assertTrue(any("scene.accuracy" in error for error in errors))
+
+    def test_validate_eval_report_payload_rejects_bool_metrics(self):
+        payload = {
+            "person_reid": {
+                "v_measure": True,
+                "adjusted_rand_index": 0.5,
+                "purity": 1.0,
+            },
+            "scene": {
+                "accuracy": 0.7,
+                "macro_f1": False,
+            },
+        }
+
+        errors = validate_eval_report_payload(payload)
+        self.assertTrue(any("person_reid.v_measure must be numeric" in error for error in errors))
+        self.assertTrue(any("scene.macro_f1 must be numeric" in error for error in errors))
 
 
 class RunnerTests(unittest.TestCase):

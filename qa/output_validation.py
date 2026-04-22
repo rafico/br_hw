@@ -13,6 +13,14 @@ def _append_error(errors: list[str], condition: bool, message: str) -> None:
         errors.append(message)
 
 
+def _is_json_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_json_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _validate_frame_ranges(frame_ranges: Any, path: str, errors: list[str]) -> None:
     _append_error(errors, isinstance(frame_ranges, list), f"{path} must be a list")
     if not isinstance(frame_ranges, list):
@@ -23,8 +31,8 @@ def _validate_frame_ranges(frame_ranges: Any, path: str, errors: list[str]) -> N
         if not isinstance(frame_range, list) or len(frame_range) != 2:
             continue
         start, end = frame_range
-        _append_error(errors, isinstance(start, int) and isinstance(end, int), f"{item_path} values must be ints")
-        if isinstance(start, int) and isinstance(end, int):
+        _append_error(errors, _is_json_int(start) and _is_json_int(end), f"{item_path} values must be ints")
+        if _is_json_int(start) and _is_json_int(end):
             _append_error(errors, start <= end, f"{item_path} must satisfy start <= end")
 
 
@@ -53,8 +61,8 @@ def validate_catalogue_payload(payload: Any) -> list[str]:
             _append_error(errors, isinstance(appearance, dict), f"{path} must be an object")
             if not isinstance(appearance, dict):
                 continue
-            _append_error(errors, "clip_id" in appearance, f"{path}.clip_id is required")
-            _append_error(errors, "local_track_id" in appearance, f"{path}.local_track_id is required")
+            _append_error(errors, isinstance(appearance.get("clip_id"), str) and bool(appearance.get("clip_id")), f"{path}.clip_id must be a non-empty string")
+            _append_error(errors, _is_json_int(appearance.get("local_track_id")), f"{path}.local_track_id must be an int")
             _append_error(errors, "frame_ranges" in appearance, f"{path}.frame_ranges is required")
             if "frame_ranges" in appearance:
                 _validate_frame_ranges(appearance["frame_ranges"], f"{path}.frame_ranges", errors)
@@ -62,7 +70,7 @@ def validate_catalogue_payload(payload: Any) -> list[str]:
                 value = appearance["cluster_probability"]
                 _append_error(
                     errors,
-                    isinstance(value, (int, float)) and 0.0 <= float(value) <= 1.0,
+                    _is_json_number(value) and 0.0 <= float(value) <= 1.0,
                     f"{path}.cluster_probability must be in [0, 1]",
                 )
 
@@ -95,15 +103,15 @@ def validate_scene_payload(payload: Any) -> list[str]:
                 continue
             start = segment.get("timestamp_start")
             end = segment.get("timestamp_end")
-            _append_error(errors, isinstance(start, (int, float)), f"{seg_path}.timestamp_start must be numeric")
-            _append_error(errors, isinstance(end, (int, float)), f"{seg_path}.timestamp_end must be numeric")
-            if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+            _append_error(errors, _is_json_number(start), f"{seg_path}.timestamp_start must be numeric")
+            _append_error(errors, _is_json_number(end), f"{seg_path}.timestamp_end must be numeric")
+            if _is_json_number(start) and _is_json_number(end):
                 _append_error(errors, float(start) <= float(end), f"{seg_path} must satisfy timestamp_start <= timestamp_end")
             people = segment.get("involved_people_global", [])
             _append_error(errors, isinstance(people, list), f"{seg_path}.involved_people_global must be a list")
             if isinstance(people, list):
                 for person_index, person_id in enumerate(people):
-                    _append_error(errors, isinstance(person_id, int), f"{seg_path}.involved_people_global[{person_index}] must be an int")
+                    _append_error(errors, _is_json_int(person_id), f"{seg_path}.involved_people_global[{person_index}] must be an int")
 
     return errors
 
@@ -128,14 +136,14 @@ def validate_eval_report_payload(payload: Any) -> list[str]:
     }
     for key, (lower, upper) in metric_bounds.items():
         value = person_reid.get(key)
-        _append_error(errors, isinstance(value, (int, float)), f"person_reid.{key} must be numeric")
-        if isinstance(value, (int, float)):
+        _append_error(errors, _is_json_number(value), f"person_reid.{key} must be numeric")
+        if _is_json_number(value):
             _append_error(errors, lower <= float(value) <= upper, f"person_reid.{key} must be in [{lower}, {upper}]")
 
     for key in ("accuracy", "macro_f1"):
         value = scene.get(key)
-        _append_error(errors, isinstance(value, (int, float)), f"scene.{key} must be numeric")
-        if isinstance(value, (int, float)):
+        _append_error(errors, _is_json_number(value), f"scene.{key} must be numeric")
+        if _is_json_number(value):
             _append_error(errors, 0.0 <= float(value) <= 1.0, f"scene.{key} must be in [0, 1]")
 
     return errors
