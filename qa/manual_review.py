@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from qa.output_validation import validate_catalogue_payload, validate_scene_payload
+
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -18,6 +20,37 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_json_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_detections_payload(payload: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, list):
+        return ["detections payload must be a list"]
+
+    for index, detection in enumerate(payload):
+        path = f"detections[{index}]"
+        if not isinstance(detection, dict):
+            errors.append(f"{path} must be an object")
+            continue
+        if not isinstance(detection.get("clip_id"), str) or not detection.get("clip_id"):
+            errors.append(f"{path}.clip_id must be a non-empty string")
+        if not _is_json_int(detection.get("frame_num")):
+            errors.append(f"{path}.frame_num must be an int")
+        if not _is_json_int(detection.get("track_id")):
+            errors.append(f"{path}.track_id must be an int")
+
+    return errors
+
+
+def _raise_if_invalid_payload(label: str, errors: Iterable[str]) -> None:
+    error_list = list(errors)
+    if error_list:
+        joined = "\n- ".join(error_list)
+        raise ValueError(f"{label} payload failed validation:\n- {joined}")
 
 
 def resolve_detection_cache_path(dataset_dir: str, detections_cache: str = "") -> Path:
@@ -425,4 +458,7 @@ def load_review_inputs(
     detections = _load_json(detections_cache_path)
     catalogue_payload = _load_json(catalogue_path)
     scene_payload = _load_json(scene_path)
+    _raise_if_invalid_payload("detections", validate_detections_payload(detections))
+    _raise_if_invalid_payload("catalogue", validate_catalogue_payload(catalogue_payload))
+    _raise_if_invalid_payload("scene", validate_scene_payload(scene_payload))
     return detections, catalogue_payload, scene_payload, detections_cache_path

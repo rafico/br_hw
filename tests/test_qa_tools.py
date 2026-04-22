@@ -2,7 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qa.manual_review import build_review_manifest, resolve_detection_cache_path
+from qa.manual_review import (
+    build_review_manifest,
+    load_review_inputs,
+    resolve_detection_cache_path,
+    validate_detections_payload,
+)
 from qa.output_validation import (
     validate_catalogue_payload,
     validate_eval_report_payload,
@@ -192,8 +197,21 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("scripts/prepare_manual_visual_review.py", bundle_command.argv)
         self.assertIn(str(Path.cwd() / "qa_artifacts" / "manual_visual_review.json"), bundle_command.argv)
 
-
 class ManualReviewTests(unittest.TestCase):
+    def test_validate_detections_payload_rejects_bool_and_missing_fields(self):
+        payload = [
+            {
+                "clip_id": "",
+                "frame_num": True,
+                "track_id": "7",
+            }
+        ]
+
+        errors = validate_detections_payload(payload)
+        self.assertTrue(any("clip_id must be a non-empty string" in error for error in errors))
+        self.assertTrue(any("frame_num must be an int" in error for error in errors))
+        self.assertTrue(any("track_id must be an int" in error for error in errors))
+
     def test_resolve_detection_cache_path_prefers_newest_variant_when_base_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir) / ".cache"
@@ -221,6 +239,68 @@ class ManualReviewTests(unittest.TestCase):
             resolved = resolve_detection_cache_path(tmpdir)
 
         self.assertEqual(resolved.name, "demo_all_detections.json")
+
+    def test_load_review_inputs_rejects_invalid_catalogue_payload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / ".cache"
+            cache_dir.mkdir()
+            detections_path = cache_dir / "demo_all_detections.json"
+            detections_path.write_text(
+                '[{"clip_id": "clip_1", "frame_num": 1, "track_id": 7}]',
+                encoding="utf-8",
+            )
+            catalogue_path = Path(tmpdir) / "catalogue_v2.json"
+            catalogue_path.write_text(
+                '{"catalogue": {"1": [{"clip_id": "clip_1", "local_track_id": "7", "frame_ranges": [[1, 2]]}]}}',
+                encoding="utf-8",
+            )
+            scene_path = Path(tmpdir) / "scene_labels_v2.json"
+            scene_path.write_text(
+                '[{"clip_id": "clip_1", "label": "normal", "crime_segments": []}]',
+                encoding="utf-8",
+            )
+            rerun_path = Path(tmpdir) / "recording.rrd"
+            rerun_path.write_bytes(b"rrd")
+
+            with self.assertRaisesRegex(ValueError, "catalogue payload failed validation"):
+                load_review_inputs(
+                    dataset_dir=tmpdir,
+                    detections_cache="",
+                    catalogue=str(catalogue_path),
+                    scene=str(scene_path),
+                    rerun_recording=str(rerun_path),
+                )
+
+    def test_load_review_inputs_rejects_invalid_detections_payload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / ".cache"
+            cache_dir.mkdir()
+            detections_path = cache_dir / "demo_all_detections.json"
+            detections_path.write_text(
+                '[{"clip_id": "clip_1", "frame_num": false, "track_id": 7}]',
+                encoding="utf-8",
+            )
+            catalogue_path = Path(tmpdir) / "catalogue_v2.json"
+            catalogue_path.write_text(
+                '{"catalogue": {"1": [{"clip_id": "clip_1", "local_track_id": 7, "frame_ranges": [[1, 2]]}]}}',
+                encoding="utf-8",
+            )
+            scene_path = Path(tmpdir) / "scene_labels_v2.json"
+            scene_path.write_text(
+                '[{"clip_id": "clip_1", "label": "normal", "crime_segments": []}]',
+                encoding="utf-8",
+            )
+            rerun_path = Path(tmpdir) / "recording.rrd"
+            rerun_path.write_bytes(b"rrd")
+
+            with self.assertRaisesRegex(ValueError, "detections payload failed validation"):
+                load_review_inputs(
+                    dataset_dir=tmpdir,
+                    detections_cache="",
+                    catalogue=str(catalogue_path),
+                    scene=str(scene_path),
+                    rerun_recording=str(rerun_path),
+                )
 
     def test_build_review_manifest_links_catalogue_and_scene_metadata(self):
         detections = [
