@@ -9,6 +9,7 @@ from pathlib import Path
 
 SUITE_NAMES = ("unit", "offline", "dataset-smoke", "release-local", "manual-visual-prep")
 OFFLINE_TEST_MODULES = (
+    "tests.test_detection_cache",
     "tests.test_qa_tools",
     "tests.test_rerank_and_clustering",
     "tests.test_vlm_scene_and_evaluate",

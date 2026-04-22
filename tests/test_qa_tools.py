@@ -187,6 +187,7 @@ class RunnerTests(unittest.TestCase):
         offline_unit_cmd = next(command for command in commands if command.name == "offline_unit_tests")
         self.assertEqual(offline_unit_cmd.argv[:4], ("/usr/bin/python3", "-m", "unittest", "-v"))
         self.assertEqual(tuple(offline_unit_cmd.argv[4:]), OFFLINE_TEST_MODULES)
+        self.assertIn("tests.test_detection_cache", OFFLINE_TEST_MODULES)
 
     def test_build_suite_commands_for_dataset_suite_requires_dataset_dir(self):
         with self.assertRaises(ValueError):
