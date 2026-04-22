@@ -100,15 +100,6 @@ def _get_clustering_backends():
     return _KMedoids, hdbscan.HDBSCAN
 
 
-def _safe_float(value) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _detection_quality(det: dict) -> float:
     quality = _safe_float(det.get("quality"))
     if quality is not None:
@@ -149,6 +140,13 @@ def _visible_pose_keypoints(frame_rgb: np.ndarray, box_xyxy: np.ndarray, pose_mo
         for landmark in landmarks.landmark
         if getattr(landmark, "visibility", 0.0) > 0.5
     )
+
+
+def _build_pose_visibility_fn(frame_rgb: np.ndarray, pose_model):
+    def pose_visibility(box_xyxy: np.ndarray) -> int:
+        return _visible_pose_keypoints(frame_rgb, box_xyxy, pose_model)
+
+    return pose_visibility
 
 
 def _init_pose_model(use_pose: bool):
@@ -195,11 +193,7 @@ def _select_tracklet_detections(
             if use_pose and pose_model is not None and det.get("video_path"):
                 frame_rgb = _load_rgb_frame(det["video_path"], int(det["frame_num"]))
                 if frame_rgb is not None:
-                    pose_callable = lambda current_box, frame_rgb=frame_rgb: _visible_pose_keypoints(
-                        frame_rgb,
-                        current_box,
-                        pose_model,
-                    )
+                    pose_callable = _build_pose_visibility_fn(frame_rgb, pose_model)
 
             keep = filter_crops_for_reid(
                 boxes_xyxy=box[None, :],

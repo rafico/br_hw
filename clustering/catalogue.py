@@ -8,7 +8,7 @@ import numpy as np
 
 def assign_person_ids(tracklet_info: List[dict], labels: np.ndarray):
     """Assign global person IDs to tracklets based on cluster labels."""
-    unique = [l for l in np.unique(labels) if l != -1]
+    unique = [label for label in np.unique(labels) if label != -1]
     cluster_to_global = {c: i + 1 for i, c in enumerate(unique)}
     next_gid = len(unique) + 1
 
