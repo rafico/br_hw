@@ -2,8 +2,8 @@
 """Verify all assignment requirements are met."""
 
 import json
-import os
 from pathlib import Path
+
 
 def check_file_exists(filepath, description):
     """Check if a file exists and return status."""
@@ -11,6 +11,7 @@ def check_file_exists(filepath, description):
     status = "✅" if exists else "❌"
     print(f"{status} {description}: {filepath}")
     return exists
+
 
 def verify_catalogue(filepath):
     """Verify catalogue structure and quality."""
@@ -22,7 +23,7 @@ def verify_catalogue(filepath):
         print(f"❌ Catalogue file not found: {filepath}")
         return False
 
-    with open(filepath, 'r') as f:
+    with Path(filepath).open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     # Check structure
@@ -37,14 +38,14 @@ def verify_catalogue(filepath):
     summary = data.get('summary', {})
 
     total_persons = summary.get('total_unique_persons', 0)
-    checks.append((f"Total persons is reasonable (<25)", total_persons < 25 and total_persons > 0))
+    checks.append(("Total persons is reasonable (<25)", total_persons < 25 and total_persons > 0))
 
     # Count cross-clip matches
     cross_clip = sum(1 for apps in catalogue.values()
                     if len(set(a['clip_id'] for a in apps)) > 1)
     match_rate = 100 * cross_clip / total_persons if total_persons > 0 else 0
-    checks.append((f"Has cross-clip matches", cross_clip > 0))
-    checks.append((f"Match rate > 40%", match_rate > 40))
+    checks.append(("Has cross-clip matches", cross_clip > 0))
+    checks.append(("Match rate > 40%", match_rate > 40))
 
     # Check each person entry has required fields
     sample_person = next(iter(catalogue.values())) if catalogue else []
@@ -62,12 +63,13 @@ def verify_catalogue(filepath):
         all_passed = all_passed and passed
 
     # Print statistics
-    print(f"\n📊 Statistics:")
+    print("\n📊 Statistics:")
     print(f"  Total unique persons: {total_persons}")
     print(f"  Cross-clip matches: {cross_clip} ({match_rate:.1f}%)")
     print(f"  Total appearances: {sum(len(apps) for apps in catalogue.values())}")
 
     return all_passed
+
 
 def verify_scene_labels(filepath):
     """Verify scene labels structure and quality."""
@@ -79,7 +81,7 @@ def verify_scene_labels(filepath):
         print(f"❌ Scene labels file not found: {filepath}")
         return False
 
-    with open(filepath, 'r') as f:
+    with Path(filepath).open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     checks = []
@@ -99,7 +101,7 @@ def verify_scene_labels(filepath):
     # Check labels are valid
     labels = [entry.get('label') for entry in data]
     checks.append(("All labels are 'normal' or 'crime'",
-                  all(l in ['normal', 'crime'] for l in labels)))
+                  all(label in ['normal', 'crime'] for label in labels)))
 
     # Check for crime detection
     has_crime = 'crime' in labels
@@ -119,12 +121,13 @@ def verify_scene_labels(filepath):
         all_passed = all_passed and passed
 
     # Print statistics
-    print(f"\n📊 Statistics:")
+    print("\n📊 Statistics:")
     print(f"  Total clips: {len(data)}")
     print(f"  Normal: {labels.count('normal')}")
     print(f"  Crime: {labels.count('crime')}")
 
     return all_passed
+
 
 def verify_writeup():
     """Verify write-up exists."""
@@ -133,6 +136,7 @@ def verify_writeup():
     print(f"{'='*70}")
 
     return check_file_exists("BR_Summary.pdf", "Technical write-up (2 pages)")
+
 
 def verify_code_files():
     """Verify key code files exist."""
@@ -155,6 +159,7 @@ def verify_code_files():
         all_exist = all_exist and exists
 
     return all_exist
+
 
 def main():
     """Run all verification checks."""
@@ -188,5 +193,6 @@ def main():
 
     return 0 if all_passed else 1
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     exit(main())

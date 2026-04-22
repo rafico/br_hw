@@ -28,6 +28,12 @@ class ColorAndFilterTests(unittest.TestCase):
         self.assertAlmostEqual(torso_color_chi2(a, b), torso_color_chi2(b, a), places=6)
 
     def test_filter_crops_for_reid_applies_geometry_iou_and_pose_rules(self):
+        def visible(_box):
+            return 8
+
+        def invisible(_box):
+            return 3
+
         boxes = np.array(
             [
                 [0, 0, 10, 30],
@@ -37,8 +43,6 @@ class ColorAndFilterTests(unittest.TestCase):
             dtype=np.float32,
         )
         other = np.array([[2, 2, 18, 32]], dtype=np.float32)
-        visible = lambda box: 8
-        invisible = lambda box: 3
 
         keep_visible = filter_crops_for_reid(
             boxes_xyxy=boxes,

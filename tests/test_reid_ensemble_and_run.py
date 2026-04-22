@@ -7,11 +7,17 @@ import numpy as np
 
 from tests.optional_deps import require_modules
 
-require_modules("cv2", "torch", "torchreid", "transformers")
+def _load_test_modules():
+    require_modules("cv2", "torch", "torchreid", "transformers")
 
-import reid_ensemble
-import run
-from visualizers.common import render_tracking_overlay
+    import reid_ensemble
+    import run
+    from visualizers.common import render_tracking_overlay
+
+    return reid_ensemble, run, render_tracking_overlay
+
+
+reid_ensemble, run, render_tracking_overlay = _load_test_modules()
 
 
 class StubExtractor:

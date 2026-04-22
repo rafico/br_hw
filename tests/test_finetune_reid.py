@@ -7,13 +7,18 @@ import numpy as np
 
 from tests.optional_deps import require_modules
 
-require_modules("cv2", "torch", "torchreid", "transformers")
+def _load_test_modules():
+    require_modules("cv2", "torch", "torchreid", "transformers")
 
-import torch
+    import torch
+    import cluster_v2
+    import finetune_reid
+    import run
 
-import cluster_v2
-import finetune_reid
-import run
+    return torch, cluster_v2, finetune_reid, run
+
+
+torch, cluster_v2, finetune_reid, run = _load_test_modules()
 
 
 class _FakeProcessor:
