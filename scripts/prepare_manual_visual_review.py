@@ -6,10 +6,12 @@ from pathlib import Path
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
-from qa.manual_review import build_review_manifest, load_review_inputs, render_review_notes
+
+def _ensure_repo_root_on_path() -> None:
+    repo_root = str(REPO_ROOT)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
 
 
 def parse_args(argv: list[str] | None = None):
@@ -27,6 +29,9 @@ def parse_args(argv: list[str] | None = None):
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_repo_root_on_path()
+    from qa.manual_review import build_review_manifest, load_review_inputs, render_review_notes
+
     args = parse_args(argv)
     detections, catalogue_payload, scene_payload, detections_cache_path = load_review_inputs(
         dataset_dir=args.dataset_dir,
