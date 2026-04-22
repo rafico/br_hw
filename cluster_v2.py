@@ -6,10 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import cv2
 import numpy as np
-from sklearn.metrics import pairwise_distances
-from sklearn.preprocessing import normalize
 
 from clustering.catalogue import assign_person_ids, build_catalogue
 from clustering.common import _compute_motion_profile, _frame_ranges, _parse_clip_start_time, _safe_float, _smooth_embeddings, tracklets_cooccur
@@ -19,6 +16,35 @@ from reid_model import torso_color_chi2
 from rerank import kreciprocal_rerank
 
 LOGGER = logging.getLogger(__name__)
+
+try:
+    from sklearn.metrics import pairwise_distances as _sklearn_pairwise_distances
+    from sklearn.preprocessing import normalize as _sklearn_normalize
+except ImportError:
+    _sklearn_pairwise_distances = None
+    _sklearn_normalize = None
+
+
+def _normalize_rows(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.size == 0:
+        return arr.astype(np.float32, copy=False)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    return arr / np.where(norms == 0.0, 1.0, norms)
+
+
+def _normalize(arr: np.ndarray) -> np.ndarray:
+    if _sklearn_normalize is not None:
+        return _sklearn_normalize(arr)
+    return _normalize_rows(arr)
+
+
+def _pairwise_distances(arr: np.ndarray) -> np.ndarray:
+    if _sklearn_pairwise_distances is not None:
+        return _sklearn_pairwise_distances(arr, metric="cosine")
+    normalized = _normalize_rows(arr)
+    distances = 1.0 - np.matmul(normalized, normalized.T)
+    return np.clip(distances, 0.0, 2.0).astype(np.float32, copy=False)
 
 
 class _KMedoids:
@@ -35,7 +61,7 @@ class _KMedoids:
         X = np.asarray(X)
         n = X.shape[0]
         k = max(1, min(self.n_clusters, n))
-        dist = pairwise_distances(X, metric=self.metric)
+        dist = _pairwise_distances(X)
 
         rng = np.random.default_rng(self.random_state)
         medoids = [int(rng.integers(0, n))]
@@ -92,6 +118,8 @@ def _detection_quality(det: dict) -> float:
 
 
 def _load_rgb_frame(video_path: str, frame_num: int) -> Optional[np.ndarray]:
+    import cv2
+
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, max(int(frame_num) - 1, 0))
     ok, frame = cap.read()
@@ -216,11 +244,11 @@ def _compute_tracklet_profiles(
         embeddings = np.asarray([det["embeddings"] for det in selected], dtype=np.float32)
         if embeddings.size == 0:
             continue
-        embeddings = normalize(embeddings.astype(np.float32))
+        embeddings = _normalize(embeddings.astype(np.float32))
         embeddings = _smooth_embeddings(embeddings, 5)
 
         if len(selected) < 6:
-            prototypes = normalize(embeddings.mean(axis=0, keepdims=True).astype(np.float32))
+            prototypes = _normalize(embeddings.mean(axis=0, keepdims=True).astype(np.float32))
         else:
             proto_count = min(int(n_prototypes), len(selected))
             try:
@@ -232,7 +260,7 @@ def _compute_tracklet_profiles(
                 prototypes = embeddings[np.asarray(medoids.medoid_indices_, dtype=np.int64)]
             except Exception as exc:
                 LOGGER.warning("KMedoids failed for %s_%s: %s", clip_id, track_id, exc)
-                prototypes = normalize(embeddings.mean(axis=0, keepdims=True).astype(np.float32))
+                prototypes = _normalize(embeddings.mean(axis=0, keepdims=True).astype(np.float32))
 
         frames = [int(det["frame_num"]) for det in dets_sorted]
         ts_values = [
@@ -258,7 +286,7 @@ def _compute_tracklet_profiles(
         ]
         torso_hist = None
         if torso_hists:
-            torso_hist = normalize(
+            torso_hist = _normalize(
                 np.mean(np.stack(torso_hists, axis=0), axis=0, keepdims=True).astype(np.float32)
             )[0]
 
@@ -268,8 +296,8 @@ def _compute_tracklet_profiles(
                 "track_id": int(track_id),
                 "frame_ranges": _frame_ranges(frames),
                 "num_frames": len(frames),
-                "prototypes": normalize(np.asarray(prototypes, dtype=np.float32)),
-                "embedding": normalize(np.asarray(prototypes, dtype=np.float32)).mean(axis=0),
+                "prototypes": _normalize(np.asarray(prototypes, dtype=np.float32)),
+                "embedding": _normalize(np.asarray(prototypes, dtype=np.float32)).mean(axis=0),
                 "all_embeddings": embeddings,
                 "relative_time_center_sec": rel_center_sec,
                 "absolute_time_center_sec": abs_center_sec,
@@ -300,12 +328,12 @@ def _build_tracklet_distance(
             proto_feats.append(prototype)
             proto_owner.append(idx)
 
-    proto_feats = normalize(np.asarray(proto_feats, dtype=np.float32))
+    proto_feats = _normalize(np.asarray(proto_feats, dtype=np.float32))
     proto_owner = np.asarray(proto_owner, dtype=np.int32)
     if use_rerank:
         d_proto = kreciprocal_rerank(proto_feats, rerank_k1, rerank_k2, rerank_lambda)
     else:
-        d_proto = pairwise_distances(proto_feats, metric="cosine").astype(np.float32)
+        d_proto = _pairwise_distances(proto_feats).astype(np.float32)
 
     n_tracklets = len(tracklet_info)
     d_track = np.full((n_tracklets, n_tracklets), np.inf, dtype=np.float32)
@@ -332,7 +360,7 @@ def _cluster_hist(tracklet_info: List[dict], members: np.ndarray) -> Optional[np
     ]
     if not hists:
         return None
-    return normalize(np.mean(np.stack(hists, axis=0), axis=0, keepdims=True))[0]
+    return _normalize(np.mean(np.stack(hists, axis=0), axis=0, keepdims=True))[0]
 
 
 def generate_person_catalogue_v2(

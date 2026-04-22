@@ -4,10 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import cv2
 import numpy as np
-import torch
-from transformers import CLIPImageProcessor, CLIPModel
 
 from reid_model import DetectionReIDExtractor
 
@@ -33,6 +30,10 @@ class CLIPReIDExtractor:
         device: str = "cuda",
         batch_size: int = 32,
     ):
+        import torch
+        from transformers import CLIPImageProcessor, CLIPModel
+
+        self._torch = torch
         self.device = torch.device(device)
         self.batch_size = max(1, int(batch_size))
         self.image_size = tuple(int(v) for v in image_size)
@@ -95,9 +96,11 @@ class CLIPReIDExtractor:
             return np.empty((0, 512), dtype=np.float32), np.empty((0,), dtype=np.int64)
 
         all_feats: List[np.ndarray] = []
-        with torch.inference_mode():
+        with self._torch.inference_mode():
             for start in range(0, len(crops), self.batch_size):
                 batch = crops[start:start + self.batch_size]
+                import cv2
+
                 resized_batch = [
                     cv2.resize(crop, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
                     for crop in batch

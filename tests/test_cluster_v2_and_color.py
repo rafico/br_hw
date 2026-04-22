@@ -6,10 +6,6 @@ from unittest import mock
 
 import numpy as np
 
-from tests.optional_deps import require_modules
-
-require_modules("cv2", "torch", "torchreid", "transformers")
-
 import cluster_v2
 from reid_ensemble import filter_crops_for_reid
 from reid_model import torso_color_chi2, torso_color_hist

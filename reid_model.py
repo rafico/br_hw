@@ -1,7 +1,34 @@
 from typing import Tuple, List
-import cv2
 import numpy as np
-from torchreid.reid.utils import FeatureExtractor
+
+
+def _rgb_to_hsv_image(frame_rgb: np.ndarray) -> np.ndarray:
+    rgb = np.asarray(frame_rgb, dtype=np.float32) / 255.0
+    maxc = np.max(rgb, axis=2)
+    minc = np.min(rgb, axis=2)
+    delta = maxc - minc
+
+    hue = np.zeros_like(maxc, dtype=np.float32)
+    nonzero = delta > 1e-12
+
+    red_is_max = nonzero & (maxc == rgb[:, :, 0])
+    green_is_max = nonzero & (maxc == rgb[:, :, 1])
+    blue_is_max = nonzero & (maxc == rgb[:, :, 2])
+
+    hue[red_is_max] = np.mod(
+        (rgb[:, :, 1][red_is_max] - rgb[:, :, 2][red_is_max]) / delta[red_is_max],
+        6.0,
+    )
+    hue[green_is_max] = ((rgb[:, :, 2][green_is_max] - rgb[:, :, 0][green_is_max]) / delta[green_is_max]) + 2.0
+    hue[blue_is_max] = ((rgb[:, :, 0][blue_is_max] - rgb[:, :, 1][blue_is_max]) / delta[blue_is_max]) + 4.0
+    hue = (hue / 6.0) % 1.0
+
+    saturation = np.zeros_like(maxc, dtype=np.float32)
+    valid_value = maxc > 1e-12
+    saturation[valid_value] = delta[valid_value] / maxc[valid_value]
+
+    value = maxc
+    return np.stack([hue * 180.0, saturation * 255.0, value * 255.0], axis=2)
 
 
 def torso_color_hist(frame_rgb: np.ndarray, box_xyxy: np.ndarray) -> np.ndarray:
@@ -26,15 +53,13 @@ def torso_color_hist(frame_rgb: np.ndarray, box_xyxy: np.ndarray) -> np.ndarray:
     if crop.size == 0:
         return np.zeros((96,), dtype=np.float32)
 
-    hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
-    hist = cv2.calcHist(
-        [hsv],
-        [0, 1, 2],
-        None,
-        [8, 4, 3],
-        [0, 180, 0, 256, 0, 256],
-    ).astype(np.float32)
-    hist = hist.reshape(-1)
+    hsv = _rgb_to_hsv_image(crop)
+    hist, _ = np.histogramdd(
+        hsv.reshape(-1, 3),
+        bins=(8, 4, 3),
+        range=((0.0, 180.0), (0.0, 256.0), (0.0, 256.0)),
+    )
+    hist = hist.astype(np.float32, copy=False).reshape(-1)
     total = float(np.sum(hist))
     if total <= 0:
         return np.zeros((96,), dtype=np.float32)
@@ -73,6 +98,8 @@ class DetectionReIDExtractor:
         batch_size: int = 32,
         input_is_bgr: bool = False,
     ):
+        from torchreid.reid.utils import FeatureExtractor
+
         self.extractor = FeatureExtractor(
             model_name=model_name,
             model_path=model_path,
