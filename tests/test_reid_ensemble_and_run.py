@@ -6,6 +6,10 @@ from unittest import mock
 
 import numpy as np
 
+from tests.optional_deps import require_modules
+
+require_modules("cv2", "torch", "torchreid", "transformers")
+
 import compute_or_load_all_detections as cache_mod
 import reid_ensemble
 import run

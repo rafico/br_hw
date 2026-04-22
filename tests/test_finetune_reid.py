@@ -4,6 +4,11 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+
+from tests.optional_deps import require_modules
+
+require_modules("cv2", "torch", "torchreid", "transformers")
+
 import torch
 
 import cluster_v2

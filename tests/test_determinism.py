@@ -3,6 +3,11 @@ import random
 import unittest
 
 import numpy as np
+
+from tests.optional_deps import require_modules
+
+require_modules("torch")
+
 import torch
 
 from utils_determinism import hash_config, seed_everything
