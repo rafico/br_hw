@@ -15,6 +15,7 @@ from ultralytics import YOLO
 
 from reid_ensemble import build_extractor
 from reid_model import torso_color_hist
+from visualizers.common import render_tracking_overlay
 
 
 def _yolo_inference_kwargs() -> dict:
@@ -401,8 +402,8 @@ def _process_frame_batch(
         tracks = update_tracker(tracker, detections, frame, features)
 
         if show_visuals:
-            tracker.plot_results(frame, show_trajectories=True)
-            cv2.imshow("BoXMOT + Ultralytics", frame)
+            vis_frame = render_tracking_overlay(frame, tracks, detections)
+            cv2.imshow("BoXMOT + Ultralytics", vis_frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 return True
 

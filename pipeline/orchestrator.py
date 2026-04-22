@@ -19,9 +19,11 @@ from visualizers import export_to_rerun
 from vlm_scene import classify_scenes_vlm
 
 from pipeline.dataset import (
+    configure_dataset_visualization,
     compute_similarity,
     compute_visualization,
     get_frame_view,
+    launch_app,
     load_video_files,
 )
 from pipeline.reembed import read_json, reembed_detections_with_finetuned_clip
@@ -270,3 +272,7 @@ def run_pipeline(args):
         )
 
     write_timing_report(timings)
+
+    if args.visualizer in {"fiftyone", "both"}:
+        configure_dataset_visualization(dataset)
+        launch_app(frame_view)

@@ -148,7 +148,7 @@ def reembed_detections_with_finetuned_clip(
     )
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Create a FiftyOne dataset from a video directory.")
     parser.add_argument("--fo-dataset-name", default="re_id", help="Name of the dataset")
     parser.add_argument("--dataset-dir", required=True, help="Path to the videos directory")
@@ -199,11 +199,11 @@ def parse_args():
     parser.add_argument("--finetune-min-prob", type=float, default=0.9, help="Minimum cluster_probability gate for pseudo-label fine-tuning")
     parser.add_argument("--finetune-epochs", type=int, default=5, help="Epoch count for pseudo-label CLIP fine-tuning")
     parser.add_argument("--evaluate", action="store_true", help="Run evaluation against ground_truth.json if available")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
     if not args.yolo_weights:
         args.yolo_weights = _default_yolo_weights(args.yolo_model)
     _orchestrator.run_pipeline(args)

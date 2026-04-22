@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Optional, Tuple
 import cv2
 import numpy as np
 
+from .common import color_for_identifier_rgba, format_identity_label
 from .projection import project_2d
 
 
@@ -47,9 +48,7 @@ def _normalize_rows(arr: np.ndarray) -> np.ndarray:
 
 
 def _color_for_id(identifier: int, seed: int = 51) -> list[int]:
-    rng = np.random.default_rng(int(identifier) + int(seed))
-    rgb = rng.integers(32, 256, size=3, dtype=np.int32)
-    return [int(rgb[0]), int(rgb[1]), int(rgb[2]), 255]
+    return color_for_identifier_rgba(identifier, seed=seed)
 
 
 def _build_global_lookup(catalogue_payload: dict) -> Tuple[Dict[Tuple[str, int], int], Dict[Tuple[str, int], float]]:
@@ -169,12 +168,13 @@ def _log_detection_boxes(
                 probability = probability_lookup.get(key)
                 boxes.append(np.asarray(det["box_xyxy_abs"], dtype=np.float32))
                 colors.append(_color_for_id(color_id, seed=seed))
-                label_parts = [f"t{int(det['track_id'])}"]
-                if global_id is not None:
-                    label_parts.append(f"g{global_id}")
-                if probability is not None:
-                    label_parts.append(f"p={probability:.2f}")
-                labels.append(" ".join(label_parts))
+                labels.append(
+                    format_identity_label(
+                        int(det["track_id"]),
+                        global_id=global_id,
+                        probability=probability,
+                    )
+                )
 
             if not boxes:
                 continue

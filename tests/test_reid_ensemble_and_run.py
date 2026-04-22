@@ -1,3 +1,5 @@
+from collections import defaultdict
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -7,6 +9,7 @@ import numpy as np
 import compute_or_load_all_detections as cache_mod
 import reid_ensemble
 import run
+from visualizers.common import render_tracking_overlay
 
 
 class StubExtractor:
@@ -63,6 +66,41 @@ class RunTrackerTests(unittest.TestCase):
         self.assertEqual(run._default_yolo_weights("yolov11"), "yolo11m.pt")
         self.assertEqual(run._default_yolo_weights("yolov26"), "yolo26m.pt")
 
+    def test_parse_args_accepts_visualizer_and_yolo_model(self):
+        args = run.parse_args([
+            "--dataset-dir", "/tmp/videos",
+            "--visualizer", "rerun",
+            "--yolo-model", "yolov11",
+            "--rerun-save", "demo.rrd",
+        ])
+
+        self.assertEqual(args.dataset_dir, "/tmp/videos")
+        self.assertEqual(args.visualizer, "rerun")
+        self.assertEqual(args.yolo_model, "yolov11")
+        self.assertEqual(args.rerun_save, "demo.rrd")
+
+    def test_main_populates_default_yolo_weights_from_selected_family(self):
+        captured = {}
+
+        def fake_run_pipeline(args):
+            captured["args"] = args
+
+        with mock.patch.object(run._orchestrator, "run_pipeline", side_effect=fake_run_pipeline):
+            run.main(["--dataset-dir", "/tmp/videos", "--yolo-model", "yolov11"])
+
+        self.assertEqual(captured["args"].yolo_weights, "yolo11m.pt")
+
+    def test_main_preserves_explicit_yolo_weights(self):
+        captured = {}
+
+        def fake_run_pipeline(args):
+            captured["args"] = args
+
+        with mock.patch.object(run._orchestrator, "run_pipeline", side_effect=fake_run_pipeline):
+            run.main(["--dataset-dir", "/tmp/videos", "--yolo-model", "yolov11", "--yolo-weights", "custom.pt"])
+
+        self.assertEqual(captured["args"].yolo_weights, "custom.pt")
+
     def test_load_detector_falls_back_from_yolo26_to_yolo11_when_missing(self):
         class FakeModel:
             names = {0: "person"}
@@ -115,6 +153,116 @@ class RunTrackerTests(unittest.TestCase):
 
         self.assertEqual(result, ("dets", "frame", "features"))
 
+    def test_run_pipeline_launches_fiftyone_app_for_fiftyone_visualizer(self):
+        pipeline_orchestrator = run._orchestrator
+        args = SimpleNamespace(
+            finetune_reid=False,
+            use_new_clustering=True,
+            reid_backbone="ensemble",
+            fo_dataset_name="re_id",
+            dataset_dir="/tmp/videos",
+            overwrite_loading=False,
+            overwrite_algo=False,
+            show=False,
+            det_batch_size=8,
+            yolo_weights="yolo26m.pt",
+            reid_model_name="osnet_ain_x1_0",
+            reid_weights="",
+            reid_model_path="",
+            tracker_type="botsort",
+            tracker_reid_weights="",
+            tracker_half=False,
+            sim_key="embd_sim",
+            viz_key="embd_viz",
+            visualizer="fiftyone",
+            pose_filter=False,
+            scene_backend="gemini",
+            rerun_save="qa_artifacts/recording.rrd",
+            rerun_spawn=False,
+            rerun_sample_every=1,
+            rerun_max_frames_per_clip=None,
+            evaluate=False,
+            finetune_epochs=5,
+            finetune_min_frames=30,
+            finetune_min_prob=0.9,
+        )
+        dataset = mock.Mock()
+        dataset.list_brain_runs.return_value = []
+        frame_view = object()
+
+        with mock.patch.object(pipeline_orchestrator, "seed_everything"), \
+                mock.patch.object(pipeline_orchestrator, "time_stage", side_effect=lambda timings, stage, func: func()), \
+                mock.patch.object(pipeline_orchestrator, "load_video_files", return_value=(dataset, False)), \
+                mock.patch.object(pipeline_orchestrator, "process_video_file"), \
+                mock.patch.object(pipeline_orchestrator, "get_frame_view", return_value=frame_view), \
+                mock.patch.object(pipeline_orchestrator, "compute_similarity"), \
+                mock.patch.object(pipeline_orchestrator, "compute_visualization"), \
+                mock.patch.object(pipeline_orchestrator, "compute_or_load_all_detections", return_value=[]), \
+                mock.patch.object(pipeline_orchestrator, "build_video_meta", return_value={}), \
+                mock.patch.object(pipeline_orchestrator, "generate_person_catalogue_v2", return_value={"catalogue": {}}), \
+                mock.patch.object(pipeline_orchestrator, "classify_scenes_vlm"), \
+                mock.patch.object(pipeline_orchestrator, "write_timing_report"), \
+                mock.patch.object(pipeline_orchestrator, "configure_dataset_visualization") as configure_mock, \
+                mock.patch.object(pipeline_orchestrator, "launch_app") as launch_mock:
+            pipeline_orchestrator.run_pipeline(args)
+
+        configure_mock.assert_called_once_with(dataset)
+        launch_mock.assert_called_once_with(frame_view)
+
+
+class VisualizationTests(unittest.TestCase):
+    def test_render_tracking_overlay_draws_tracks_on_a_copy(self):
+        frame = np.zeros((24, 24, 3), dtype=np.uint8)
+        tracks = np.array([[2.0, 2.0, 18.0, 18.0, 7.0, 0.91, 0.0, 0.0]], dtype=np.float32)
+
+        rendered = render_tracking_overlay(frame, tracks, np.empty((0, 6), dtype=np.float32))
+
+        self.assertEqual(rendered.shape, frame.shape)
+        self.assertFalse(np.array_equal(rendered, frame))
+        self.assertTrue(np.array_equal(frame, np.zeros_like(frame)))
+
+    def test_render_tracking_overlay_falls_back_to_detector_boxes(self):
+        frame = np.zeros((24, 24, 3), dtype=np.uint8)
+        detections = np.array([[3.0, 3.0, 19.0, 19.0, 0.95, 0.0]], dtype=np.float32)
+
+        rendered = render_tracking_overlay(frame, np.empty((0, 8), dtype=np.float32), detections)
+
+        self.assertFalse(np.array_equal(rendered, frame))
+
+    def test_process_frame_batch_shows_annotated_frame(self):
+        frame = np.zeros((16, 16, 3), dtype=np.uint8)
+        annotated = np.ones_like(frame)
+        sample = SimpleNamespace(frames=defaultdict(dict))
+        model = mock.Mock(return_value=[SimpleNamespace(boxes=None)])
+        tracker = object()
+        vision = run._vision
+
+        with mock.patch.object(vision, "update_tracker", return_value=np.empty((0, 8), dtype=np.float32)), \
+                mock.patch.object(vision, "convert_to_fiftyone_detections", return_value=[]), \
+                mock.patch.object(vision, "render_tracking_overlay", return_value=annotated) as render_mock, \
+                mock.patch.object(vision.cv2, "imshow") as imshow_mock, \
+                mock.patch.object(vision.cv2, "waitKey", return_value=-1), \
+                mock.patch.object(vision.fo, "Detections", side_effect=lambda detections: SimpleNamespace(detections=detections)):
+            stop_requested = vision._process_frame_batch(
+                frames=[frame],
+                frame_numbers=[1],
+                fps=30.0,
+                model=model,
+                person_class_id=0,
+                person_label="person",
+                reid_extractor=mock.Mock(),
+                tracker=tracker,
+                sample=sample,
+                width=16,
+                height=16,
+                show_visuals=True,
+            )
+
+        self.assertFalse(stop_requested)
+        render_mock.assert_called_once()
+        imshow_mock.assert_called_once_with("BoXMOT + Ultralytics", annotated)
+        self.assertEqual(sample.frames[1]["detections"].detections, [])
+
 
 class CacheKeyTests(unittest.TestCase):
     def test_cache_key_includes_reid_backbone(self):
@@ -128,6 +276,29 @@ class CacheKeyTests(unittest.TestCase):
         key_clip = cache_mod._cache_key_for_dataset(dataset, reid_backbone="clipreid")
 
         self.assertNotEqual(key_osnet, key_clip)
+
+    def test_save_and_load_all_detections_round_trip(self):
+        detections = [
+            {
+                "clip_id": "clip_1",
+                "video_path": "/tmp/clip_1.mp4",
+                "frame_num": 3,
+                "track_id": 7,
+                "embeddings": np.asarray([1.0, 0.0], dtype=np.float32),
+                "torso_hist": np.asarray([0.5, 0.5], dtype=np.float32),
+                "box_xyxy_abs": np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = cache_mod.Path(tmpdir) / "all_detections.json"
+            cache_mod.save_all_detections(path, detections)
+            loaded = cache_mod.load_all_detections(path)
+
+        self.assertEqual(loaded[0]["clip_id"], "clip_1")
+        self.assertEqual(loaded[0]["embeddings"], [1.0, 0.0])
+        self.assertEqual(loaded[0]["torso_hist"], [0.5, 0.5])
+        self.assertEqual(loaded[0]["box_xyxy_abs"], [1.0, 2.0, 3.0, 4.0])
 
 
 if __name__ == "__main__":

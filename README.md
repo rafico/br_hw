@@ -62,6 +62,7 @@ Important runtime options:
 - `--finetune-min-frames`, `--finetune-min-prob`, `--finetune-epochs`: control pseudo-label eligibility and training time
 - `--pose-filter`: enable MediaPipe-based keyframe filtering in V2 clustering
 - `--visualizer rerun --rerun-save recording.rrd`: export a standalone Rerun recording
+- `--visualizer fiftyone`: build the FiftyOne review view and launch the app at the end of the run
 - `--visualizer none`: skip the FiftyOne similarity/UMAP stages entirely
 - `--evaluate`: run `evaluate.py` against `ground_truth.json`
 - `--legacy-clustering`: keep the old `catalogue_simple.json` path
@@ -72,6 +73,29 @@ Examples:
 python run.py --dataset-dir "$VIDEOS" --finetune-reid
 python run.py --dataset-dir "$VIDEOS" --visualizer rerun --rerun-save recording.rrd
 python run.py --dataset-dir "$VIDEOS" --visualizer none
+```
+
+## QA
+
+The concrete QA process lives in [QA_PLAN.md](/home/rafi/code/br_hw/QA_PLAN.md:1).
+
+Local entrypoints:
+
+- `make qa-unit`: automated unit and regression tests
+- `make qa-offline`: unit tests plus CLI/help smoke, no dataset required
+- `make qa-dataset-smoke VIDEOS=/path/to/videos`: offline end-to-end smoke plus output validation
+- `make qa-release-local VIDEOS=/path/to/videos`: local release candidate matrix including fine-tune and Rerun
+- `make qa-manual-visual-prep VIDEOS=/path/to/videos`: generate the Rerun recording and sampled-frame review bundle for manual signoff
+- `make qa-validate`: validate `catalogue_v2.json`, `scene_labels_v2.json`, and `eval_report.json`
+
+Direct scripts:
+
+```bash
+python scripts/run_qa.py --suite offline
+python scripts/run_qa.py --suite dataset-smoke --dataset-dir "$VIDEOS"
+python scripts/run_qa.py --suite manual-visual-prep --dataset-dir "$VIDEOS" --rerun-save qa_artifacts/recording.rrd
+python scripts/prepare_manual_visual_review.py --dataset-dir "$VIDEOS" --rerun-recording qa_artifacts/recording.rrd
+python scripts/qa_validate_outputs.py --catalogue catalogue_v2.json --scene scene_labels_v2.json
 ```
 
 ## Outputs
