@@ -189,6 +189,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(tuple(offline_unit_cmd.argv[4:]), OFFLINE_TEST_MODULES)
         self.assertIn("tests.test_cluster_v2_and_color", OFFLINE_TEST_MODULES)
         self.assertIn("tests.test_detection_cache", OFFLINE_TEST_MODULES)
+        self.assertIn("tests.test_determinism", OFFLINE_TEST_MODULES)
 
     def test_build_suite_commands_for_dataset_suite_requires_dataset_dir(self):
         with self.assertRaises(ValueError):

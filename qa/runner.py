@@ -11,6 +11,7 @@ SUITE_NAMES = ("unit", "offline", "dataset-smoke", "release-local", "manual-visu
 OFFLINE_TEST_MODULES = (
     "tests.test_cluster_v2_and_color",
     "tests.test_detection_cache",
+    "tests.test_determinism",
     "tests.test_qa_tools",
     "tests.test_rerank_and_clustering",
     "tests.test_vlm_scene_and_evaluate",
