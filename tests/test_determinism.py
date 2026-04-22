@@ -4,36 +4,42 @@ import unittest
 
 import numpy as np
 
-from tests.optional_deps import require_modules
-
-require_modules("torch")
-
-import torch
-
 from utils_determinism import hash_config, seed_everything
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 class DeterminismTests(unittest.TestCase):
-    def test_seed_everything_repeats_python_numpy_torch_sequences(self):
+    def test_seed_everything_repeats_python_and_numpy_sequences(self):
         seed_everything(51)
         seq_a = (
             random.random(),
             np.random.rand(4).tolist(),
-            torch.rand(4).tolist(),
         )
 
         seed_everything(51)
         seq_b = (
             random.random(),
             np.random.rand(4).tolist(),
-            torch.rand(4).tolist(),
         )
 
         self.assertEqual(seq_a[0], seq_b[0])
         self.assertEqual(seq_a[1], seq_b[1])
-        self.assertEqual(seq_a[2], seq_b[2])
         self.assertEqual(os.environ["PYTHONHASHSEED"], "51")
         self.assertEqual(os.environ["CUBLAS_WORKSPACE_CONFIG"], ":4096:8")
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_seed_everything_repeats_torch_sequences_when_available(self):
+        seed_everything(51)
+        seq_a = torch.rand(4).tolist()
+
+        seed_everything(51)
+        seq_b = torch.rand(4).tolist()
+
+        self.assertEqual(seq_a, seq_b)
         self.assertTrue(torch.backends.cudnn.deterministic)
         self.assertFalse(torch.backends.cudnn.benchmark)
 
