@@ -1,5 +1,5 @@
 VIDEOS ?= /home/rafi/Downloads/blackrover_hw/videos
-PYTHON ?= python
+PYTHON ?= python3
 
 .PHONY: reproduce reproduce-stage1 reproduce-ft reproduce-rerun evaluate ablation clean-cache qa-unit qa-offline qa-dataset-smoke qa-release-local qa-manual-visual-prep qa-validate
 

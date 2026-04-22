@@ -77,7 +77,7 @@ python run.py --dataset-dir "$VIDEOS" --visualizer none
 
 ## QA
 
-The concrete QA process lives in [QA_PLAN.md](/home/rafi/code/br_hw/QA_PLAN.md:1).
+The concrete QA process lives in [QA_PLAN.md](QA_PLAN.md).
 
 Local entrypoints:
 

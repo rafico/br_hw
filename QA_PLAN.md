@@ -5,7 +5,7 @@ This repo uses a two-part release gate:
 1. Automated QA to catch structural regressions early.
 2. Manual visual QA to verify tracking, clustering, and visualization behavior on real frames.
 
-The manual checklist lives in [qa/manual_visual_checklist.md](/home/rafi/code/br_hw/qa/manual_visual_checklist.md:1).
+The manual checklist lives in [qa/manual_visual_checklist.md](qa/manual_visual_checklist.md).
 
 ## Automated Gate
 

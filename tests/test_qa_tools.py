@@ -131,23 +131,37 @@ class RunnerTests(unittest.TestCase):
         )
         bundle_command = next(command for command in commands if command.name == "manual_visual_review_bundle")
         self.assertIn("scripts/prepare_manual_visual_review.py", bundle_command.argv)
-        self.assertIn("/home/rafi/code/br_hw/qa_artifacts/manual_visual_review.json", bundle_command.argv)
+        self.assertIn(str(Path.cwd() / "qa_artifacts" / "manual_visual_review.json"), bundle_command.argv)
 
 
 class ManualReviewTests(unittest.TestCase):
-    def test_resolve_detection_cache_path_prefers_newest_cache(self):
+    def test_resolve_detection_cache_path_prefers_newest_variant_when_base_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir) / ".cache"
             cache_dir.mkdir()
-            older = cache_dir / "demo_all_detections.json"
-            newer = cache_dir / "demo_all_detections_ft.json"
+            older = cache_dir / "demo_all_detections_ft.json"
+            newer = cache_dir / "demo_all_detections_debug.json"
             older.write_text("[]", encoding="utf-8")
             newer.write_text("[]", encoding="utf-8")
             newer.touch()
 
             resolved = resolve_detection_cache_path(tmpdir)
 
-        self.assertEqual(resolved.name, "demo_all_detections_ft.json")
+        self.assertEqual(resolved.name, "demo_all_detections_debug.json")
+
+    def test_resolve_detection_cache_path_prefers_base_cache_over_variants(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / ".cache"
+            cache_dir.mkdir()
+            base = cache_dir / "demo_all_detections.json"
+            ft = cache_dir / "demo_all_detections_ft.json"
+            base.write_text("[]", encoding="utf-8")
+            ft.write_text("[]", encoding="utf-8")
+            ft.touch()
+
+            resolved = resolve_detection_cache_path(tmpdir)
+
+        self.assertEqual(resolved.name, "demo_all_detections.json")
 
     def test_build_review_manifest_links_catalogue_and_scene_metadata(self):
         detections = [

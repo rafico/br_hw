@@ -28,7 +28,9 @@ def resolve_detection_cache_path(dataset_dir: str, detections_cache: str = "") -
         return path
 
     cache_dir = Path(dataset_dir).expanduser().resolve() / ".cache"
-    candidates = sorted(cache_dir.glob("*_all_detections*.json"))
+    base_candidates = sorted(cache_dir.glob("*_all_detections.json"))
+    variant_candidates = sorted(cache_dir.glob("*_all_detections_*.json"))
+    candidates = base_candidates or variant_candidates
     if not candidates:
         raise FileNotFoundError(f"no detections cache found under {cache_dir}")
 
