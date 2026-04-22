@@ -10,16 +10,28 @@ import importlib
 
 class _LazyModule:
     def __init__(self, module_name: str):
-        self._module_name = module_name
-        self._module = None
+        object.__setattr__(self, "_module_name", module_name)
+        object.__setattr__(self, "_module", None)
 
     def _load(self):
         if self._module is None:
-            self._module = importlib.import_module(self._module_name)
+            object.__setattr__(self, "_module", importlib.import_module(self._module_name))
         return self._module
 
     def __getattr__(self, name: str):
         return getattr(self._load(), name)
+
+    def __setattr__(self, name: str, value):
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._load(), name, value)
+
+    def __delattr__(self, name: str):
+        if name.startswith("_"):
+            object.__delattr__(self, name)
+            return
+        delattr(self._load(), name)
 
 
 def _load_boxmot_symbols():

@@ -155,6 +155,14 @@ class RunTrackerTests(unittest.TestCase):
 
         self.assertEqual(result, ("dets", "frame", "features"))
 
+    def test_lazy_module_patch_updates_underlying_module(self):
+        sentinel = object()
+
+        with mock.patch.object(run._vision, "update_tracker", return_value=sentinel):
+            result = run.update_tracker("tracker", "dets", "frame", "features")
+
+        self.assertIs(result, sentinel)
+
     def test_run_pipeline_launches_fiftyone_app_for_fiftyone_visualizer(self):
         pipeline_orchestrator = run._orchestrator
         args = SimpleNamespace(
